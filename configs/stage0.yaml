@@ -1,0 +1,53 @@
+stage: stage0
+results_root: results
+experiment:
+  name: stage0_two_by_two
+  group_id: null
+  device: cuda
+  precision: bf16
+  save_checkpoints: true
+  checkpoint_steps: auto_log
+  eval_interval: 500
+  log_interval: 50
+model:
+  name: small
+  n_layers: 4
+  d_model: 256
+  n_heads: 8
+  context_length: 128
+  mlp_ratio: 4
+  dropout: 0.0
+data:
+  n_nouns: 100
+  n_verbs: 40
+  n_preps: 5
+  batch_size: 256
+  sequence_length: 128
+  val_probe_size: 2000
+  test_probe_size: 2000
+  probe_seed: 20260608
+  onset_rounding: nearest
+  mix_before:
+    local: 0.5
+    pp_same: 0.5
+    pp_opp: 0.0
+  mix_after:
+    local: 0.35
+    pp_same: 0.35
+    pp_opp: 0.30
+train:
+  total_steps: 50000
+  optimizer: adamw
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  peak_lr: 3.0e-4
+  terminal_lr_factor: 0.1
+  weight_decay: 0.1
+  warmup_fraction: 0.01
+  grad_clip: 1.0
+  compile: false
+stage0:
+  seeds: [0, 1]
+  onsets: [0.02, 0.6]
+  schedules: [s1_decay, s2_constant]
+  fixed_dose: true

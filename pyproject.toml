@@ -1,0 +1,18 @@
+[project]
+name = "critical-period-lm"
+version = "0.1.0"
+description = "Synthetic agreement critical-period experiments"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "PyYAML",
+  "numpy",
+  "pandas",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

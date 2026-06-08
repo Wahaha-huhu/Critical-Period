@@ -1,0 +1,54 @@
+stage: smoke
+results_root: results
+experiment:
+  name: stage0_smoke
+  group_id: null
+  device: cpu
+  cpu_threads: 1
+  precision: fp32
+  save_checkpoints: true
+  checkpoint_steps: [0, 1, 2]
+  eval_interval: 999
+  log_interval: 1
+model:
+  name: tiny
+  n_layers: 1
+  d_model: 32
+  n_heads: 4
+  context_length: 32
+  mlp_ratio: 2
+  dropout: 0.0
+data:
+  n_nouns: 12
+  n_verbs: 6
+  n_preps: 2
+  batch_size: 1
+  sequence_length: 32
+  val_probe_size: 8
+  test_probe_size: 8
+  probe_seed: 12345
+  onset_rounding: nearest
+  mix_before:
+    local: 0.5
+    pp_same: 0.5
+    pp_opp: 0.0
+  mix_after:
+    local: 0.35
+    pp_same: 0.35
+    pp_opp: 0.30
+train:
+  total_steps: 2
+  optimizer: adamw
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  peak_lr: 3.0e-4
+  terminal_lr_factor: 0.1
+  weight_decay: 0.1
+  warmup_fraction: 0.01
+  grad_clip: 1.0
+  compile: false
+stage0:
+  seeds: [0]
+  onsets: [0.02, 0.6]
+  schedules: [s1_decay, s2_constant]
+  fixed_dose: true
