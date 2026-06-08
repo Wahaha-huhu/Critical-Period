@@ -8,6 +8,8 @@ dependencies = [
   "PyYAML",
   "numpy",
   "pandas",
+  "matplotlib",
+  "tabulate",
 ]
 
 [tool.setuptools.packages.find]

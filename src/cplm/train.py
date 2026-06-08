@@ -100,6 +100,8 @@ def train_run(
     checkpoint_steps = set(int(s) for s in checkpoint_steps)
     eval_interval = int(config["experiment"].get("eval_interval", 500))
     log_interval = int(config["experiment"].get("log_interval", 50))
+    progress_to_stdout = bool(config["experiment"].get("progress_to_stdout", True))
+    progress_interval = int(config["experiment"].get("progress_interval", eval_interval))
     batch_size = int(dconf["batch_size"])
     seq_len = int(dconf["sequence_length"])
     grad_clip = float(tconf.get("grad_clip", 0.0))
@@ -111,6 +113,7 @@ def train_run(
     lr_weighted_pp_opp = 0.0
     started = time.time()
     last_loss = float("nan")
+    ema_loss = float("nan")
 
     def emit_eval(step: int, split: str = "val") -> dict[str, float]:
         items = val_items if split == "val" else test_items
@@ -127,6 +130,16 @@ def train_run(
             "lr_weighted_pp_opp": lr_weighted_pp_opp,
         }
         result_manager.append_jsonl("metrics_eval.jsonl", payload)
+        if progress_to_stdout and split == "val":
+            print(
+                f"EVAL run={result_manager.spec.run_id} step={step} "
+                f"loss_last={last_loss:.4f} local={metrics.get('acc_local', float('nan')):.3f} "
+                f"pp_same={metrics.get('acc_pp_same', float('nan')):.3f} "
+                f"pp_opp={metrics.get('acc_pp_opp', float('nan')):.3f} "
+                f"inv={metrics.get('invariance', float('nan')):.3f} "
+                f"pp_opp_count={counts_total['pp_opp']}",
+                flush=True,
+            )
         return metrics
 
     # Initial evaluation and checkpoint.
@@ -156,9 +169,14 @@ def train_run(
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         opt.step()
         last_loss = float(loss.detach().cpu())
+        ema_loss = last_loss if ema_loss != ema_loss else 0.98 * ema_loss + 0.02 * last_loss
         for k in counts_total:
             counts_total[k] += int(counts[k])
         lr_weighted_pp_opp += float(lr) * int(counts["pp_opp"])
+
+        elapsed = time.time() - started
+        tokens_per_sec = counts_total["tokens"] / elapsed if elapsed > 0 else float("nan")
+        steps_per_sec = step / elapsed if elapsed > 0 else float("nan")
 
         if step % log_interval == 0 or step == 1:
             result_manager.append_jsonl(
@@ -166,11 +184,21 @@ def train_run(
                 {
                     "step": step,
                     "loss": last_loss,
+                    "ema_loss": ema_loss,
                     "lr": lr,
                     "schedule": schedule,
                     "seed": seed,
                     "onset_step": onset_step,
-                    "elapsed_sec": time.time() - started,
+                    "readout": result_manager.spec.readout,
+                    "elapsed_sec": elapsed,
+                    "steps_per_sec": steps_per_sec,
+                    "tokens_per_sec": tokens_per_sec,
+                    "count_local": counts_total["local"],
+                    "count_pp_same": counts_total["pp_same"],
+                    "count_pp_opp": counts_total["pp_opp"],
+                    "count_sentences": counts_total["sentences"],
+                    "count_tokens": counts_total["tokens"],
+                    "lr_weighted_pp_opp": lr_weighted_pp_opp,
                 },
             )
             result_manager.append_jsonl(
@@ -185,6 +213,13 @@ def train_run(
                     "tokens": counts_total["tokens"],
                     "lr_weighted_pp_opp": lr_weighted_pp_opp,
                 },
+            )
+        if progress_to_stdout and (step % progress_interval == 0 or step == 1):
+            print(
+                f"TRAIN run={result_manager.spec.run_id} step={step}/{max_steps} "
+                f"loss={last_loss:.4f} ema={ema_loss:.4f} lr={lr:.2e} "
+                f"pp_opp_count={counts_total['pp_opp']} tok/s={tokens_per_sec:.0f}",
+                flush=True,
             )
         if step % eval_interval == 0 or step == total_steps:
             emit_eval(step, "val")

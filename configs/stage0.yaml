@@ -5,10 +5,12 @@ experiment:
   group_id: null
   device: cuda
   precision: bf16
-  save_checkpoints: true
-  checkpoint_steps: auto_log
+  save_checkpoints: false
+  checkpoint_steps: [0, 50000]
   eval_interval: 500
   log_interval: 50
+  progress_to_stdout: true
+  progress_interval: 500
 model:
   name: small
   n_layers: 4
