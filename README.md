@@ -121,3 +121,13 @@ python scripts/validate_injection_datasets.py \
 ```
 
 Do not start BabyLM training until the dataset report passes and the example sheet has been manually inspected.
+
+### v4 fine structural dose sweep
+
+After the coarse v4 dose sweep, run the fine transition sweep:
+
+```bash
+python scripts/run_structural_dose_sweep.py --config configs/fast_structural_fine_sweep_v4.yaml
+```
+
+See `docs/structural_fine_sweep_v4.md`.
