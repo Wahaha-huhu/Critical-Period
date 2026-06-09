@@ -18,6 +18,17 @@ PREPOSITIONS = {"of", "near", "beside", "behind", "around", "with", "inside", "b
 REL_WORDS = {"who", "that", "which"}
 FUNCTION = DETERMINERS | PREPOSITIONS | REL_WORDS | {"and", "or", "but", "not", "very", "quite", "rather"}
 
+PRONOUN_NUMBERS = {
+    "he": "singular", "she": "singular", "it": "singular",
+    "they": "plural",
+}
+AMBIGUOUS_OR_NONTHIRD_PRONOUNS = {"i", "you", "we", "me", "us", "him", "her", "them"}
+BAD_TRANSCRIPT_TOKENS = {
+    "chi", "mot", "fat", "bro", "sis", "exp", "inv", "par", "pau", "urs", "adu",
+    "childes", "subtlex", "speaker", "xxx", "www", "hv", "lw", "et", "na"
+}
+
+
 EXTRA_VERBS = [
     ("make", "makes"), ("take", "takes"), ("keep", "keeps"), ("give", "gives"), ("find", "finds"),
     ("bring", "brings"), ("show", "shows"), ("use", "uses"), ("need", "needs"), ("open", "opens"),
@@ -70,8 +81,40 @@ def load_corpus_sentences(globs: list[str], limit: int | None = None) -> list[st
     return out[:limit] if limit else out
 
 
+def _is_noisy_corpus_sentence(sentence: str) -> str | None:
+    """Reject transcript/provenance artifacts before heuristic parsing.
+
+    The corpus-derived HOP path is for LM-tier natural carriers. Child-language
+    corpora and subtitles contain speaker tags, file IDs, coding tokens, and
+    malformed fragments; a conservative rejection is better than extracting
+    fake subjects such as CHI/MOT/URS or file identifiers.
+    """
+    low = sentence.lower()
+    if any(x in low for x in ["xxx", "childes_", ".cha", "speaker:", "mot:", "chi:", "fat:", "bro:", "urs:", "pau:"]):
+        return "transcript_marker"
+    if re.search(r"\b[A-Z]{2,}\s*:", sentence):
+        return "speaker_label"
+    if ":" in sentence:
+        return "colon_or_speaker_like"
+    if re.search(r"\b[a-z]{2,}[A-Z_]+\b", sentence):
+        return "file_or_markup_token"
+    # Too many uppercase labels or IDs is a strong sign of transcript metadata.
+    caps = re.findall(r"\b[A-Z]{2,}\b", sentence)
+    if len(caps) >= 2:
+        return "many_allcaps_tokens"
+    if re.search(r"\b\w*\d\w*\b", sentence):
+        return "digit_or_file_id"
+    return None
+
+
 def _number_of_noun(tok: str) -> str | None:
-    t = tok.lower()
+    t = tok.lower().strip()
+    if t in PRONOUN_NUMBERS:
+        return PRONOUN_NUMBERS[t]
+    if t in AMBIGUOUS_OR_NONTHIRD_PRONOUNS:
+        return None
+    if t in BAD_TRANSCRIPT_TOKENS:
+        return None
     if t in SINGULAR_NOUNS:
         return "singular"
     if t in PLURAL_NOUNS:
@@ -80,24 +123,49 @@ def _number_of_noun(tok: str) -> str | None:
         return "plural"
     if len(t) <= 2 or t in FUNCTION or t in LEMMA_SET or t in INFL_SET:
         return None
+    if not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", tok):
+        return None
     # Conservative morphology fallback. Avoid many false plural endings.
-    if t.endswith("s") and not t.endswith(("ss", "us", "is")):
+    if t.endswith("s") and not t.endswith(("ss", "us", "is", "'s")):
         return "plural"
-    if re.fullmatch(r"[a-z]+", t):
+    # Proper names and ordinary alphabetic nouns default singular.
+    if re.fullmatch(r"[a-z]+", t) or (tok[:1].isupper() and tok[1:].islower()):
         return "singular"
     return None
 
 
+def _subject_segment(tokens: list[str], verb_index: int) -> tuple[int, list[str]]:
+    """Return tokens between last strong boundary and the verb."""
+    start = 0
+    for j in range(verb_index - 1, -1, -1):
+        if tokens[j] in {".", "!", "?", ";", ":"}:
+            start = j + 1
+            break
+    return start, tokens[start:verb_index]
+
+
 def _head_noun_before_verb(tokens: list[str], verb_index: int) -> tuple[int, str, str] | None:
-    # Choose the first plausible noun in the pre-verbal subject region. This
-    # deliberately avoids nearest-noun behavior in PP attractor cases.
-    for i, tok in enumerate(tokens[:verb_index]):
+    # Choose the first plausible head in the local pre-verbal subject segment.
+    # This keeps PP nouns as attractors rather than switching to nearest noun.
+    start, seg = _subject_segment(tokens, verb_index)
+    if not seg or len(seg) > 18:
+        return None
+    lows = [t.lower() for t in seg]
+    if any(t in BAD_TRANSCRIPT_TOKENS or t in AMBIGUOUS_OR_NONTHIRD_PRONOUNS for t in lows):
+        return None
+    if any(re.fullmatch(r"[A-Z]{2,}", t) for t in seg):
+        return None
+    # Reject fragments dominated by function words before the verb.
+    content_like = [t for t in seg if _number_of_noun(t) and t.lower() not in FUNCTION]
+    if not content_like:
+        return None
+    for off, tok in enumerate(seg):
         low = tok.lower()
         if low in PUNCT or low in FUNCTION or low in ADJECTIVES:
             continue
         num = _number_of_noun(tok)
         if num:
-            return i, tok, num
+            return start + off, tok, num
     return None
 
 
@@ -137,11 +205,18 @@ def _punctuation_in_window(tokens: list[str], verb_index: int, hop_distance: int
 
 
 def extract_candidate(sentence: str, source_id: str, split: str = "pool", min_len: int = 8, max_len: int = 64, hop_distance: int = 4) -> tuple[SourceSentence | None, Rejection | None]:
-    if any(ch in sentence for ch in ['"', "“", "”", "<", ">", "|"]):
-        return None, Rejection(sentence, "quote_or_markup")
+    noisy = _is_noisy_corpus_sentence(sentence)
+    if noisy:
+        return None, Rejection(sentence, noisy)
+    if any(ch in sentence for ch in ['"', "“", "”", "<", ">", "|", "_"]):
+        return None, Rejection(sentence, "quote_markup_or_underscore")
     tokens = tokenize_simple(sentence)
     if len(tokens) < min_len or len(tokens) > max_len:
         return None, Rejection(sentence, "length_filter")
+    if tokens and tokens[0].islower():
+        # Most accepted examples should be complete sentences, not transcript
+        # action fragments like "pastes tape on paper".
+        return None, Rejection(sentence, "lowercase_sentence_initial")
     lows = [t.lower() for t in tokens]
     qualifying: list[tuple[int, str, str, str]] = []
     for i, low in enumerate(lows):
@@ -159,14 +234,16 @@ def extract_candidate(sentence: str, source_id: str, split: str = "pool", min_le
     if head is None:
         return None, Rejection(sentence, "no_clear_subject_head")
     head_idx, head_noun, head_number = head
+    # Require the head to be reasonably close to the verb; long fragments are
+    # often parser errors under the heuristic extractor.
+    if verb_index - head_idx > 14:
+        return None, Rejection(sentence, "subject_too_far_from_verb")
     if verb_form_number == "singular" and head_number != "singular":
         return None, Rejection(sentence, "verb_subject_number_mismatch")
     if verb_form_number == "plural_candidate" and head_number != "plural":
         return None, Rejection(sentence, "plural_candidate_without_plural_head")
     subject_number = head_number
     marker = "S" if subject_number == "singular" else "P"
-    # For plural candidate the inflected token is already the lemma. For singular,
-    # ensure the lemma is known.
     verb_lemma = lemma
     verb_inflected = inflected
     attractor_indices, attractor_numbers = _attractors_between(tokens, head_idx, verb_index, subject_number)
@@ -203,7 +280,7 @@ def extract_candidate(sentence: str, source_id: str, split: str = "pool", min_le
         window_punctuation_count=punct_count,
         tail_word_length=sum(1 for tok in tokens[verb_index + 1 :] if is_word_token(tok)),
         source_length=len(tokens),
-        metadata={"parser": "heuristic_v4_1", "original_sentence": sentence},
+        metadata={"parser": "heuristic_v4_1b_strict_single_verb", "original_sentence": sentence},
     ), None
 
 
@@ -300,15 +377,136 @@ def _subset_leak_score(sources: list[SourceSentence]) -> float:
     lengths = [float(r["source_length"]) for r in recs]
     verb_idx = [float(r["verb_index_transformed"]) for r in recs]
     values = [1.0 if r["marker"] == "P" else 0.0 for r in recs]
-    mode_share = max(Counter(int(x) for x in marker_idx).values()) / len(marker_idx)
-    return abs(_local_corr(marker_idx, lengths)) + abs(_local_corr(values, verb_idx)) + 0.5 * mode_share
+    tails = [float(r.get("tail_word_length_after_marker", 0) or 0) for r in recs]
+    mode_marker_share = max(Counter(int(x) for x in marker_idx).values()) / len(marker_idx)
+    mode_verb_share = max(Counter(int(x) for x in verb_idx).values()) / len(verb_idx)
+    # Penalise positional/value leakage and concentration.
+    return (
+        abs(_local_corr(marker_idx, lengths))
+        + abs(_local_corr(values, verb_idx))
+        + abs(_local_corr(values, lengths))
+        + abs(_local_corr(tails, verb_idx))
+        + 0.8 * mode_marker_share
+        + 0.6 * mode_verb_share
+    )
 
 
-def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.Random, trials: int = 80) -> list[SourceSentence]:
+def _marker_counts(cands: list[SourceSentence]) -> Counter[str]:
+    return Counter(c.subject_number for c in cands)
+
+
+def _can_balance(cands: list[SourceSentence], n: int) -> bool:
+    cnt = _marker_counts(cands)
+    return cnt["singular"] >= n // 2 and cnt["plural"] >= n - n // 2
+
+
+def _draw_diverse(pool: list[SourceSentence], k: int, rng: random.Random) -> list[SourceSentence]:
+    """Draw k examples while spreading verb positions and lengths."""
+    if k <= 0:
+        return []
+    by_key: defaultdict[tuple[int, int, str], list[SourceSentence]] = defaultdict(list)
+    for c in pool:
+        # Exact-ish verb position plus coarse length and frame avoids a single
+        # verb-index mode dominating the probe.
+        key = (c.verb_index, c.source_length // 4, c.frame_shape)
+        by_key[key].append(c)
+    for vals in by_key.values():
+        rng.shuffle(vals)
+    keys = list(by_key)
+    rng.shuffle(keys)
+    chosen: list[SourceSentence] = []
+    while len(chosen) < k and keys:
+        rng.shuffle(keys)
+        next_keys = []
+        for key in keys:
+            vals = by_key[key]
+            if vals and len(chosen) < k:
+                chosen.append(vals.pop())
+            if vals:
+                next_keys.append(key)
+        keys = next_keys
+    if len(chosen) < k:
+        rest = [c for vals in by_key.values() for c in vals]
+        rng.shuffle(rest)
+        chosen.extend(rest[: k - len(chosen)])
+    return chosen[:k]
+
+
+def _choose_balanced(cands: list[SourceSentence], n: int, rng: random.Random) -> list[SourceSentence]:
+    """Choose an exactly S/P-balanced subset with diverse positions.
+
+    If exact balance is impossible, return fewer than n examples; the caller
+    should choose a different split or fail loudly. Silent all-S/all-P probes
+    are invalid for the v4.1 value gate.
+    """
+    if not _can_balance(cands, n):
+        return []
+    target_s = n // 2
+    target_p = n - target_s
+    singular = [c for c in cands if c.subject_number == "singular"]
+    plural = [c for c in cands if c.subject_number == "plural"]
+
+    # First, take matched S/P pairs inside the same position/length/frame bucket.
+    buckets: defaultdict[tuple[int, int, str], dict[str, list[SourceSentence]]] = defaultdict(lambda: {"singular": [], "plural": []})
+    for c in cands:
+        key = (c.verb_index // 2, c.source_length // 4, c.frame_shape)
+        buckets[key][c.subject_number].append(c)
+    for b in buckets.values():
+        rng.shuffle(b["singular"])
+        rng.shuffle(b["plural"])
+
+    chosen: list[SourceSentence] = []
+    used: set[str] = set()
+    keys = list(buckets)
+    rng.shuffle(keys)
+    cur_s = cur_p = 0
+    made_progress = True
+    while made_progress and cur_s < target_s and cur_p < target_p:
+        made_progress = False
+        rng.shuffle(keys)
+        for key in keys:
+            if cur_s >= target_s or cur_p >= target_p:
+                break
+            b = buckets[key]
+            if b["singular"] and b["plural"]:
+                s = b["singular"].pop()
+                p = b["plural"].pop()
+                chosen.extend([s, p])
+                used.add(s.source_id); used.add(p.source_id)
+                cur_s += 1; cur_p += 1
+                made_progress = True
+
+    # Fill each side separately with diverse draws.
+    rem_s = [c for c in singular if c.source_id not in used]
+    rem_p = [c for c in plural if c.source_id not in used]
+    chosen.extend(_draw_diverse(rem_s, target_s - cur_s, rng))
+    chosen.extend(_draw_diverse(rem_p, target_p - cur_p, rng))
+    if len({c.source_id for c in chosen}) < n:
+        # Remove accidental duplicates and top up from unused pools.
+        uniq = []
+        seen = set()
+        for c in chosen:
+            if c.source_id not in seen:
+                uniq.append(c); seen.add(c.source_id)
+        chosen = uniq
+        for pool in (rem_s, rem_p):
+            for c in pool:
+                if len(chosen) >= n:
+                    break
+                if c.source_id not in seen:
+                    chosen.append(c); seen.add(c.source_id)
+    if len(chosen) != n:
+        return []
+    rng.shuffle(chosen)
+    return chosen
+
+
+def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.Random, trials: int = 120) -> list[SourceSentence]:
     best: list[SourceSentence] | None = None
     best_score = 999.0
+    if not _can_balance(cands, n):
+        return []
     for _ in range(trials):
-        # Shuffle copy so _choose_balanced sees different within-bucket order.
         cc = list(cands)
         rng.shuffle(cc)
         chosen = _choose_balanced(cc, n, rng)
@@ -317,56 +515,7 @@ def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.R
         score = _subset_leak_score(chosen)
         if score < best_score:
             best, best_score = chosen, score
-    return best if best is not None else _choose_balanced(cands, n, rng)
-
-
-def _choose_balanced(cands: list[SourceSentence], n: int, rng: random.Random) -> list[SourceSentence]:
-    """Choose a roughly S/P-balanced subset while decorrelating value from position.
-
-    We greedily draw matched singular/plural examples inside coarse buckets of
-    verb index, source length, and frame. This implements the v4.1 value-side
-    rebalancing before the validator runs the value-from-position attack.
-    """
-    buckets: defaultdict[tuple[int, int, str], dict[str, list[SourceSentence]]] = defaultdict(lambda: {"singular": [], "plural": []})
-    for c in cands:
-        key = (c.verb_index // 2, c.source_length // 4, c.frame_shape)
-        buckets[key][c.subject_number].append(c)
-    chosen: list[SourceSentence] = []
-    keys = list(buckets)
-    rng.shuffle(keys)
-    # First take within-bucket pairs where possible.
-    made_progress = True
-    while len(chosen) + 2 <= n and made_progress:
-        made_progress = False
-        rng.shuffle(keys)
-        for key in keys:
-            if len(chosen) + 2 > n:
-                break
-            b = buckets[key]
-            if b["singular"] and b["plural"]:
-                chosen.append(b["singular"].pop())
-                chosen.append(b["plural"].pop())
-                made_progress = True
-    # Fill remaining slots with global balance.
-    existing = {c.source_id for c in chosen}
-    rest_by = {"singular": [], "plural": []}
-    for c in cands:
-        if c.source_id not in existing:
-            rest_by[c.subject_number].append(c)
-    rng.shuffle(rest_by["singular"]); rng.shuffle(rest_by["plural"])
-    target_s = n // 2
-    target_p = n - target_s
-    cur_s = sum(1 for c in chosen if c.subject_number == "singular")
-    cur_p = len(chosen) - cur_s
-    while len(chosen) < n and (rest_by["singular"] or rest_by["plural"]):
-        need_s = cur_s < target_s
-        pick_num = "singular" if need_s and rest_by["singular"] else "plural" if rest_by["plural"] else "singular"
-        c = rest_by[pick_num].pop()
-        chosen.append(c)
-        cur_s += int(pick_num == "singular")
-        cur_p += int(pick_num == "plural")
-    rng.shuffle(chosen)
-    return chosen[:n]
+    return best if best is not None else []
 
 
 def build_corpus_hop_dataset(
@@ -384,10 +533,10 @@ def build_corpus_hop_dataset(
     raw_sentences = load_corpus_sentences(corpus_globs, limit=max_corpus_sentences)
     source_kind = "corpus"
     if not raw_sentences and use_demo_if_no_corpus:
-        # Oversample because heuristic extraction rejects some generated lines with relative verbs.
-        raw_sentences = make_demo_corpus(max(6000, (n_train + n_probe) * 8), seed=seed + 17)
+        raw_sentences = make_demo_corpus(max(6000, (n_train + n_probe) * 10), seed=seed + 17)
         source_kind = "demo_fallback"
     rejections: list[Rejection] = []
+    rejection_counter: Counter[str] = Counter()
     seen = set()
     cands: list[SourceSentence] = []
     for i, sent in enumerate(raw_sentences):
@@ -398,53 +547,96 @@ def build_corpus_hop_dataset(
         cand, rej = extract_candidate(sent, f"corpus_{i:07d}", hop_distance=hop_distance)
         if cand is not None:
             cands.append(cand)
-        elif rej is not None and len(rejections) < 500:
-            rejections.append(rej)
+        elif rej is not None:
+            rejection_counter[rej.reason] += 1
+            if len(rejections) < 500:
+                rejections.append(rej)
 
-    if len(cands) < n_train + n_probe:
-        raise ValueError(f"Only {len(cands)} parse-valid corpus candidates; need at least {n_train+n_probe}. Use a larger corpus or relax filters.")
+    need_total = n_train + n_probe
+    counts_all = _marker_counts(cands)
+    if len(cands) < need_total or counts_all["singular"] < need_total // 2 or counts_all["plural"] < need_total - need_total // 2:
+        raise ValueError(
+            "Insufficient balanced parse-valid corpus candidates. "
+            f"found total={len(cands)}, singular={counts_all['singular']}, plural={counts_all['plural']}; "
+            f"need at least total={need_total} with both values. "
+            "Use more corpus sentences, remove transcript-heavy files, or broaden the parser."
+        )
 
-    # Hold out the rarest available complex frame with enough examples; prefer pp2+relative if present.
-    by_frame = defaultdict(list)
+    by_frame: defaultdict[str, list[SourceSentence]] = defaultdict(list)
     for c in cands:
         by_frame[c.frame_shape].append(c)
-    preferred = sorted(by_frame, key=lambda f: (not ("pp2" in f and "rel1" in f), -len(by_frame[f])))
+
+    # Choose a held-out frame that is non-dominant, has both values, and leaves
+    # enough balanced candidates for training. Never let this frame leak into train.
+    min_held = max(20, n_probe // 10)
     heldout_frame = None
-    for f in preferred:
-        if len(by_frame[f]) >= max(20, n_probe // 8):
-            heldout_frame = f
-            break
+    frame_candidates = sorted(
+        by_frame,
+        key=lambda f: (
+            # prefer more complex frames, then enough but not dominant counts
+            not ("pp2" in f or "rel1" in f),
+            -min(_marker_counts(by_frame[f])["singular"], _marker_counts(by_frame[f])["plural"]),
+            len(by_frame[f]),
+        ),
+    )
+    for f in frame_candidates:
+        held_counts = _marker_counts(by_frame[f])
+        if held_counts["singular"] < min_held // 2 or held_counts["plural"] < min_held - min_held // 2:
+            continue
+        train_pool_try = [c for c in cands if c.frame_shape != f]
+        if _can_balance(train_pool_try, n_train):
+            # Enough seen-frame material must remain for the rest of the probe.
+            seen_probe_need = n_probe - min_held
+            if _can_balance(train_pool_try, n_train + seen_probe_need):
+                heldout_frame = f
+                break
     if heldout_frame is None:
-        heldout_frame = max(by_frame, key=lambda f: len(by_frame[f]))
+        # Fall back to a frame with both values and enough train material. The
+        # validator will still fail if no true held-out frame is possible.
+        for f in frame_candidates:
+            train_pool_try = [c for c in cands if c.frame_shape != f]
+            if _can_balance(by_frame[f], min_held) and _can_balance(train_pool_try, n_train):
+                heldout_frame = f
+                break
+    if heldout_frame is None:
+        raise ValueError(
+            "Could not choose a balanced held-out frame without starving train. "
+            f"Frame counts: {dict(Counter(c.frame_shape for c in cands))}"
+        )
 
     train_pool = [c for c in cands if c.frame_shape != heldout_frame]
     heldout_pool = [c for c in cands if c.frame_shape == heldout_frame]
-    rng.shuffle(train_pool)
-    rng.shuffle(heldout_pool)
-    n_heldout_probe = min(len(heldout_pool), max(20, n_probe // 4))
-    probe_seen_pool = train_pool[n_train:]
-    train_candidates = train_pool[:max(n_train * 5, n_train)]
-    if len(train_candidates) < n_train:
-        rng.shuffle(cands)
-        train_candidates = cands[:max(n_train * 5, n_train)]
-    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=60)
+    rng.shuffle(train_pool); rng.shuffle(heldout_pool)
+
+    train_base = _choose_balanced_low_leak(train_pool, n_train, rng, trials=180)
+    if len(train_base) != n_train:
+        raise ValueError(
+            f"Could not draw balanced train split from non-heldout frames. "
+            f"heldout_frame={heldout_frame}, train_pool_counts={dict(_marker_counts(train_pool))}"
+        )
     train_ids = {c.source_id for c in train_base}
 
     heldout_candidates = [c for c in heldout_pool if c.source_id not in train_ids]
     seen_candidates = [c for c in train_pool if c.source_id not in train_ids]
-    # Force a modest held-out-frame subset for the structural-generalisation
-    # check, but keep it small enough that it does not dominate correlations.
-    n_held = min(len(heldout_candidates), max(20, n_probe // 10))
-    heldout_chosen = _choose_balanced_low_leak(heldout_candidates, n_held, rng, trials=40) if n_held else []
+
+    n_held = min(max(20, n_probe // 10), n_probe // 3)
+    if not _can_balance(heldout_candidates, n_held):
+        n_held = 0
+    heldout_chosen = _choose_balanced_low_leak(heldout_candidates, n_held, rng, trials=80) if n_held else []
     seen_needed = n_probe - len(heldout_chosen)
-    seen_chosen = _choose_balanced_low_leak(seen_candidates, seen_needed, rng, trials=120)
+    seen_chosen = _choose_balanced_low_leak(seen_candidates, seen_needed, rng, trials=220)
+    if len(seen_chosen) != seen_needed:
+        raise ValueError(
+            f"Could not draw balanced seen-frame probe split. "
+            f"needed={seen_needed}, seen_counts={dict(_marker_counts(seen_candidates))}"
+        )
     probe_base = heldout_chosen + seen_chosen
-    if len(probe_base) < n_probe:
-        remaining = [c for c in cands if c.source_id not in train_ids and c.source_id not in {p.source_id for p in probe_base}]
-        probe_base += _choose_balanced_low_leak(remaining, n_probe - len(probe_base), rng, trials=20)
+    if len(probe_base) != n_probe or not _can_balance(probe_base, n_probe):
+        raise ValueError(
+            f"Invalid probe split after balancing: n={len(probe_base)}, counts={dict(_marker_counts(probe_base))}"
+        )
     rng.shuffle(probe_base)
 
-    # Set split and held-out metadata on immutable SourceSentence via replacement.
     def update(c: SourceSentence, split: str) -> SourceSentence:
         import dataclasses
         return dataclasses.replace(
@@ -469,10 +661,17 @@ def build_corpus_hop_dataset(
         "n_parse_valid_candidates": len(cands),
         "n_rejections_sampled": len(rejections),
         "heldout_frame": heldout_frame,
+        "candidate_marker_counts": dict(counts_all),
+        "train_marker_counts": dict(_marker_counts(train_sources)),
+        "probe_marker_counts": dict(_marker_counts(probe_sources)),
         "frame_counts_valid": dict(Counter(c.frame_shape for c in cands)),
+        "frame_marker_counts_valid": {
+            f: dict(_marker_counts(vals)) for f, vals in by_frame.items()
+        },
+        "rejection_reasons_total": dict(rejection_counter),
         "rejection_reasons_sampled": dict(Counter(r.reason for r in rejections)),
         "rejection_examples": [{"reason": r.reason, "sentence": r.sentence} for r in rejections[:50]],
-        "parser": "heuristic_v4_1_single_verb",
+        "parser": "heuristic_v4_1b_strict_single_verb",
         "single_qualifying_verb_policy": True,
     }
     return data, meta

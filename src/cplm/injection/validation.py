@@ -293,8 +293,18 @@ def validate_structural_pair(
     train_frames = set(str(r.get("frame_shape")) for r in train_records)
     heldout_frame_leak = sorted([f for f in heldout_frames if f in train_frames])
 
+    train_marker_counts = Counter(str(r.get("marker")) for r in train_records)
+    probe_marker_counts = Counter(str(r.get("marker")) for r in probe_records)
+    probe_marker_balance = {
+        "train_marker_counts": dict(train_marker_counts),
+        "probe_marker_counts": dict(probe_marker_counts),
+        "probe_S_share": probe_marker_counts.get("S", 0) / max(1, len(probe_records)),
+        "probe_P_share": probe_marker_counts.get("P", 0) / max(1, len(probe_records)),
+    }
+
     summary = {
         **split_summary,
+        "marker_value_balance": probe_marker_balance,
         "position_baselines": {
             "mode_slot_accuracy": mode_slot_acc,
             "length_anchored_accuracy": length_anchor_acc,
@@ -340,6 +350,14 @@ def validate_structural_pair(
     }
 
     if enforce_position_gate and name == "wordhop":
+        if probe_marker_counts.get("S", 0) == 0 or probe_marker_counts.get("P", 0) == 0:
+            errors.append(f"wordhop probe marker values not both present: {dict(probe_marker_counts)}")
+        else:
+            s_share = probe_marker_counts.get("S", 0) / max(1, len(probe_records))
+            if not (0.40 <= s_share <= 0.60):
+                errors.append(f"wordhop probe marker balance outside 40/60 band: S_share={s_share:.3f}, counts={dict(probe_marker_counts)}")
+        if len(opp) < max(10, len(probe_records) // 20):
+            errors.append(f"wordhop opposite-attractor probe too small: {len(opp)}")
         if mode_slot_acc >= 0.15:
             errors.append(f"wordhop C1 mode-slot baseline too high: {mode_slot_acc:.3f} >= 0.15")
         if length_anchor_acc >= 0.15:
