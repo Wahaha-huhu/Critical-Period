@@ -145,6 +145,12 @@ def build_tiny_model(config: dict[str, Any], vocab_size: int) -> DecoderOnlyTran
 @torch.no_grad()
 def next_token_logprobs(model: torch.nn.Module, prefix_ids: list[int], device: torch.device) -> torch.Tensor:
     model.eval()
+    context_length = int(getattr(model, "context_length", len(prefix_ids)))
+    # Evaluation is next-token only, so if a prompt is longer than the model context,
+    # use the most recent context window rather than crashing. The v4 calibration
+    # config uses context_length=96, which covers the generated probes, but this
+    # guard makes the pilot robust to future longer templates.
+    prefix_ids = prefix_ids[-context_length:]
     ids = torch.tensor(prefix_ids, dtype=torch.long, device=device).unsqueeze(0)
     logits = model(ids)["logits"][0, -1]
     return F.log_softmax(logits.float(), dim=-1).cpu()
