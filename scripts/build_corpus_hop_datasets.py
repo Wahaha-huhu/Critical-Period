@@ -37,6 +37,61 @@ def _write_audit(out_dir: Path, records: dict[str, list[dict]], meta: dict) -> N
     (out_dir / "corpus_audit_sheet.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_parser_audit_csv(out_dir: Path, records: dict[str, list[dict]]) -> None:
+    """Write a manual parser-audit sheet for the corpus-HOP gate.
+
+    The automated gates can show that shortcuts fail, but the language-model tier
+    also needs a manual linguistic audit: the parser must locate a real verb,
+    subject, subject number, and attractors. The manual_* columns are blank on
+    purpose; fill them during audit and keep the completed CSV with the run.
+    """
+    rows = []
+    # Prefer probe examples, then train examples; WORDHOP contains all structural metadata.
+    pool = list(records.get("wordhop_probe", [])) + list(records.get("wordhop_train", []))
+    for r in pool[:200]:
+        meta = r.get("metadata") or {}
+        rows.append({
+            "source_id": r.get("source_id"),
+            "split": r.get("split"),
+            "source_text": r.get("source_text"),
+            "wordhop_text": r.get("correct_text"),
+            "verb_inflected": r.get("verb_inflected"),
+            "verb_lemma": r.get("verb_lemma"),
+            "verb_index": r.get("verb_index_transformed"),
+            "head_noun": r.get("head_noun"),
+            "head_noun_index": r.get("head_noun_index"),
+            "subject_number": r.get("subject_number"),
+            "marker": r.get("marker"),
+            "marker_index": r.get("marker_index"),
+            "template": r.get("template"),
+            "frame_shape": r.get("frame_shape"),
+            "attractor_indices": ";".join(map(str, r.get("attractor_indices") or [])),
+            "attractor_numbers": ";".join(map(str, r.get("attractor_numbers") or [])),
+            "parser": meta.get("parser"),
+            "subject_dep": meta.get("subject_dep"),
+            "subject_pos": meta.get("subject_pos"),
+            "subject_tag": meta.get("subject_tag"),
+            "verb_pos": meta.get("verb_pos"),
+            "verb_tag": meta.get("verb_tag"),
+            "manual_verb_correct": "",
+            "manual_subject_correct": "",
+            "manual_subject_number_correct": "",
+            "manual_attractor_labels_correct": "",
+            "manual_wordhop_slot_correct": "",
+            "manual_fatal_error": "",
+            "manual_notes": "",
+        })
+    if not rows:
+        return
+    fields = list(rows[0].keys())
+    with (out_dir / "parser_audit_sample.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+    guidance = """# Parser audit instructions\n\nOpen `parser_audit_sample.csv` and fill the `manual_*` columns for a sample of corpus-derived WORDHOP examples. Suggested gate before BabyLM injection:\n\n- fatal parse errors below 2–3%\n- subject-number errors below 3–5%\n- WORDHOP slot errors approximately 0%\n\nThis audit is separate from the statistical shortcut gate. A dataset can pass the automated gate but still fail the linguistic audit if the parser labels are wrong.\n"""
+    (out_dir / "parser_audit_instructions.md").write_text(guidance, encoding="utf-8")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build corpus-derived HOP v4.1 datasets for BabyLM/Pythia tiers.")
     ap.add_argument("--config", default="configs/corpus_hop_babylm_v41.yaml")
@@ -133,6 +188,7 @@ def main() -> None:
     save_yaml(cfg, out_dir / "config_resolved.yaml")
     write_dataset_report(report, out_dir / "dataset_report.md")
     _write_audit(out_dir, wordhop, corpus_meta)
+    _write_parser_audit_csv(out_dir, wordhop)
 
     example_lines = ["# Corpus-derived injection dataset example sheet", ""]
     for title, recs in examples.items():

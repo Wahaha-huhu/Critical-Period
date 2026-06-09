@@ -35,6 +35,101 @@ def _length_bucket(n: int, bucket_size: int = 4) -> int:
     return n // bucket_size
 
 
+def _record_source_length(r: dict[str, Any]) -> int:
+    return int(r.get("source_length", len(r.get("source_tokens", r.get("tokens", []))) - 1))
+
+
+def _punctuation_features(r: dict[str, Any]) -> tuple[int, int, tuple[int, ...]]:
+    toks = list(r.get("source_tokens") or r.get("tokens") or [])
+    # If only marked tokens exist, remove the marker token before computing the
+    # source punctuation signature. The signature is allowed for the adversary;
+    # it does not reveal the verb location or the true marker slot.
+    marker_index = r.get("marker_index")
+    if isinstance(marker_index, int) and 0 <= marker_index < len(toks) and toks[marker_index] in {"S", "P"}:
+        toks = toks[:marker_index] + toks[marker_index + 1 :]
+    punct_positions = tuple(i for i, t in enumerate(toks) if not is_word_token(str(t)))
+    comma_count = sum(1 for t in toks if str(t) == ",")
+    punct_count = len(punct_positions)
+    # Cap the exact signature to keep buckets from being almost all singleton;
+    # the goal is a strong but still trainable position-only attacker.
+    return punct_count, comma_count, punct_positions[:6]
+
+
+def _fit_bucket_marker_predictor(
+    train_records: list[dict[str, Any]],
+    probe_records: list[dict[str, Any]],
+    feature_fn,
+    min_bucket_count: int = 3,
+) -> dict[str, Any]:
+    global_mode = _mode([int(r["marker_index"]) for r in train_records], 0)
+    by_bucket: defaultdict[Any, list[int]] = defaultdict(list)
+    for r in train_records:
+        by_bucket[feature_fn(r)].append(int(r["marker_index"]))
+    modes: dict[Any, int] = {
+        key: _mode(vals, global_mode) for key, vals in by_bucket.items() if len(vals) >= min_bucket_count
+    }
+    correct = known = correct_known = 0
+    for r in probe_records:
+        key = feature_fn(r)
+        pred = modes.get(key, global_mode)
+        if key in modes:
+            known += 1
+            correct_known += int(pred == int(r["marker_index"]))
+        correct += int(pred == int(r["marker_index"]))
+    n = max(1, len(probe_records))
+    return {
+        "accuracy": correct / n,
+        "known_bucket_accuracy": correct_known / known if known else 0.0,
+        "known_bucket_coverage": known / n,
+        "n_train_buckets": len(by_bucket),
+        "n_usable_train_buckets": len(modes),
+    }
+
+
+def adversarial_position_only_baseline(train_records: list[dict[str, Any]], probe_records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Strong placement attacker that never sees the verb or parse path.
+
+    This is the v4.3 hard gate replacing proxy-only rejection on C3/C4.
+    It may use sentence length, frame/domain labels, and punctuation signatures,
+    but it may not use verb index, subject number, dependency paths, the true
+    marker slot, or features derived from the true marker slot such as tail
+    length after marker.
+    """
+    def frame(r): return str(r.get("frame_shape"))
+    def src_len(r): return _record_source_length(r)
+    def punct(r): return _punctuation_features(r)
+    predictors = {
+        "length_exact": lambda r: (src_len(r),),
+        "length_bucket_2": lambda r: (_length_bucket(src_len(r), 2),),
+        "length_bucket_4": lambda r: (_length_bucket(src_len(r), 4),),
+        "length_bucket_8": lambda r: (_length_bucket(src_len(r), 8),),
+        "frame_only": lambda r: (frame(r),),
+        "frame_length_exact": lambda r: (frame(r), src_len(r)),
+        "frame_length_bucket_2": lambda r: (frame(r), _length_bucket(src_len(r), 2)),
+        "frame_length_bucket_4": lambda r: (frame(r), _length_bucket(src_len(r), 4)),
+        "length_punctuation_counts": lambda r: (src_len(r), punct(r)[0], punct(r)[1]),
+        "frame_length_punctuation_counts": lambda r: (frame(r), _length_bucket(src_len(r), 2), punct(r)[0], punct(r)[1]),
+        "punctuation_signature_length": lambda r: (_length_bucket(src_len(r), 2), punct(r)[2]),
+        "frame_punctuation_signature_length": lambda r: (frame(r), _length_bucket(src_len(r), 2), punct(r)[2]),
+    }
+    results: dict[str, Any] = {}
+    best_name = None
+    best_acc = -1.0
+    for name, fn in predictors.items():
+        res = _fit_bucket_marker_predictor(train_records, probe_records, fn, min_bucket_count=3)
+        results[name] = res
+        if res["accuracy"] > best_acc:
+            best_name = name
+            best_acc = float(res["accuracy"])
+    return {
+        "best_predictor": best_name,
+        "best_accuracy": best_acc,
+        "pass_threshold_accuracy": 0.25,
+        "predictors": results,
+        "allowed_features": "source length, frame/construction label, punctuation counts/signature; no verb index, subject number, true marker slot, or marker-derived tail length",
+    }
+
+
 def validate_wordhop_records(records: list[dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
     errors: list[str] = []
     counts = Counter()
@@ -191,6 +286,8 @@ def validate_structural_pair(
     frame_len_known_acc = correct_known / known if known else 0.0
     frame_len_coverage = known / max(1, len(probe_records))
 
+    adversarial_position_summary = adversarial_position_only_baseline(train_records, probe_records)
+
     # Verb-relative oracle: recompute WORDHOP placement from the transformed tokens.
     oracle_correct = 0
     for r in probe_records:
@@ -313,6 +410,11 @@ def validate_structural_pair(
             "frame_length_bucket_coverage": frame_len_coverage,
             "verb_relative_oracle_accuracy": verb_relative_oracle_acc,
         },
+        "adversarial_position_only_baseline": adversarial_position_summary,
+        "placement_gate_logic": {
+            "hard_gate": "C1 simple baselines plus adversarial position-only baseline must fail; verb-relative oracle must succeed",
+            "diagnostic_only": "C2 verb-index spread, C3 marker/length correlation, and C4 tail/verb correlation are reported but do not reject by themselves",
+        },
         "verb_index_spread": {
             "most_frequent_single_verb_index_share": most_verb_share,
             "distinct_verb_indices": len(set(verb_indices)),
@@ -364,22 +466,18 @@ def validate_structural_pair(
             errors.append(f"wordhop C1 length-anchored baseline too high: {length_anchor_acc:.3f} >= 0.15")
         if frame_len_acc >= 0.25:
             errors.append(f"wordhop C1 frame+length baseline too high: {frame_len_acc:.3f} >= 0.25")
+        if adversarial_position_summary["best_accuracy"] >= 0.25:
+            errors.append(
+                f"wordhop adversarial position-only baseline too high: "
+                f"{adversarial_position_summary['best_accuracy']:.3f} >= 0.25 "
+                f"({adversarial_position_summary['best_predictor']})"
+            )
         if verb_relative_oracle_acc < 0.99:
             errors.append(f"wordhop verb-relative oracle too low: {verb_relative_oracle_acc:.3f}")
-        if most_verb_share >= 0.25:
-            errors.append(f"wordhop C2 most frequent verb-index share too high: {most_verb_share:.3f}")
-        if len(set(verb_indices)) < 8:
-            errors.append(f"wordhop C2 distinct verb indices too low: {len(set(verb_indices))}")
-        if abs(_corr(marker_indices, lengths)) >= 0.30:
-            errors.append(f"wordhop C3 marker-length correlation too high: {abs(_corr(marker_indices, lengths)):.3f}")
-        if frame_mode_acc >= 0.25:
-            errors.append(f"wordhop C3 frame-mode marker accuracy too high: {frame_mode_acc:.3f}")
-        if len(set(tails)) < 4:
-            errors.append(f"wordhop C4 distinct tail lengths too low: {len(set(tails))}")
-        if most_tail_share >= 0.40:
-            errors.append(f"wordhop C4 most frequent tail share too high: {most_tail_share:.3f}")
-        if abs(_corr(tails, verb_indices)) >= 0.20:
-            errors.append(f"wordhop C4 tail/verb correlation too high: {abs(_corr(tails, verb_indices)):.3f}")
+        # C2/C3/C4 are retained as diagnostics in the report. They are not
+        # hard rejection criteria by themselves because a residual correlation is
+        # harmless if the simple C1 baselines and the stronger adversarial
+        # position-only predictor still cannot place the marker.
         if subj_acc < 0.99:
             errors.append(f"wordhop subject oracle on opposite attractors too low: {subj_acc:.3f}")
         if nearest_acc > 0.25:
