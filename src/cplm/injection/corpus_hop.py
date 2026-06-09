@@ -280,7 +280,7 @@ def extract_candidate(sentence: str, source_id: str, split: str = "pool", min_le
         window_punctuation_count=punct_count,
         tail_word_length=sum(1 for tok in tokens[verb_index + 1 :] if is_word_token(tok)),
         source_length=len(tokens),
-        metadata={"parser": "heuristic_v4_1b_strict_single_verb", "original_sentence": sentence},
+        metadata={"parser": "heuristic_v4_1c_strict_single_verb", "original_sentence": sentence},
     ), None
 
 
@@ -369,25 +369,70 @@ def _local_corr(xs: list[float], ys: list[float]) -> float:
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (vx * vy) ** 0.5
 
 
-def _subset_leak_score(sources: list[SourceSentence]) -> float:
+def _source_marker_index(c: SourceSentence, hop_distance: int = 4) -> int:
+    """Fast WORDHOP insertion index without materialising the transformed text."""
+    count_words = 0
+    last_word_idx = c.verb_index
+    for idx in range(c.verb_index + 1, len(c.tokens)):
+        if is_word_token(c.tokens[idx]):
+            count_words += 1
+            last_word_idx = idx
+            if count_words >= hop_distance:
+                return idx + 1
+    return min(len(c.tokens), last_word_idx + 1)
+
+
+def _source_tail_after_marker(c: SourceSentence, hop_distance: int = 4) -> int:
+    marker_idx = _source_marker_index(c, hop_distance)
+    return sum(1 for tok in c.tokens[marker_idx:] if is_word_token(tok))
+
+
+def _subset_position_metrics(sources: list[SourceSentence]) -> dict[str, float]:
     if not sources:
-        return 999.0
-    recs = [transform_sentence(c, "WORDHOP", 4) for c in sources]
-    marker_idx = [float(r["marker_index"]) for r in recs]
-    lengths = [float(r["source_length"]) for r in recs]
-    verb_idx = [float(r["verb_index_transformed"]) for r in recs]
-    values = [1.0 if r["marker"] == "P" else 0.0 for r in recs]
-    tails = [float(r.get("tail_word_length_after_marker", 0) or 0) for r in recs]
-    mode_marker_share = max(Counter(int(x) for x in marker_idx).values()) / len(marker_idx)
-    mode_verb_share = max(Counter(int(x) for x in verb_idx).values()) / len(verb_idx)
-    # Penalise positional/value leakage and concentration.
+        return {
+            "mode_marker_share": 1.0,
+            "mode_verb_share": 1.0,
+            "marker_length_corr": 1.0,
+            "value_verb_corr": 1.0,
+            "value_length_corr": 1.0,
+            "tail_verb_corr": 1.0,
+        }
+    marker_idx = [float(_source_marker_index(c)) for c in sources]
+    lengths = [float(c.source_length) for c in sources]
+    verb_idx = [float(c.verb_index) for c in sources]
+    values = [1.0 if c.marker == "P" else 0.0 for c in sources]
+    tails = [float(_source_tail_after_marker(c)) for c in sources]
+    return {
+        "mode_marker_share": max(Counter(int(x) for x in marker_idx).values()) / len(marker_idx),
+        "mode_verb_share": max(Counter(int(x) for x in verb_idx).values()) / len(verb_idx),
+        "marker_length_corr": abs(_local_corr(marker_idx, lengths)),
+        "value_verb_corr": abs(_local_corr(values, verb_idx)),
+        "value_length_corr": abs(_local_corr(values, lengths)),
+        "tail_verb_corr": abs(_local_corr(tails, verb_idx)),
+    }
+
+
+def _subset_leak_score(sources: list[SourceSentence]) -> float:
+    """Score a split by the shortcut signals the v4.1 gate rejects.
+
+    The score deliberately puts a large penalty on the two failure modes seen on
+    the first BabyLM run: a high WORDHOP mode-slot baseline and a high
+    marker-index/length correlation. This does not change labels; it only
+    chooses a less shortcut-prone held-out sample from the same corpus pool.
+    """
+    m = _subset_position_metrics(sources)
+    # Smooth penalties below the hard gate, steep penalties above it.
+    mode_excess = max(0.0, m["mode_marker_share"] - 0.145)
+    corr_excess = max(0.0, m["marker_length_corr"] - 0.28)
     return (
-        abs(_local_corr(marker_idx, lengths))
-        + abs(_local_corr(values, verb_idx))
-        + abs(_local_corr(values, lengths))
-        + abs(_local_corr(tails, verb_idx))
-        + 0.8 * mode_marker_share
-        + 0.6 * mode_verb_share
+        4.0 * m["marker_length_corr"]
+        + 2.0 * m["value_verb_corr"]
+        + 2.0 * m["value_length_corr"]
+        + 1.5 * m["tail_verb_corr"]
+        + 3.0 * m["mode_marker_share"]
+        + 1.0 * m["mode_verb_share"]
+        + 60.0 * mode_excess
+        + 25.0 * corr_excess
     )
 
 
@@ -406,9 +451,10 @@ def _draw_diverse(pool: list[SourceSentence], k: int, rng: random.Random) -> lis
         return []
     by_key: defaultdict[tuple[int, int, str], list[SourceSentence]] = defaultdict(list)
     for c in pool:
-        # Exact-ish verb position plus coarse length and frame avoids a single
-        # verb-index mode dominating the probe.
-        key = (c.verb_index, c.source_length // 4, c.frame_shape)
+        # Use the actual WORDHOP marker slot plus coarse length/tail buckets;
+        # this directly attacks mode-slot and length-anchored shortcuts while
+        # still preserving real-corpus sentence variation.
+        key = (_source_marker_index(c), c.source_length // 4, _source_tail_after_marker(c) // 4, c.frame_shape)
         by_key[key].append(c)
     for vals in by_key.values():
         rng.shuffle(vals)
@@ -449,7 +495,10 @@ def _choose_balanced(cands: list[SourceSentence], n: int, rng: random.Random) ->
     # First, take matched S/P pairs inside the same position/length/frame bucket.
     buckets: defaultdict[tuple[int, int, str], dict[str, list[SourceSentence]]] = defaultdict(lambda: {"singular": [], "plural": []})
     for c in cands:
-        key = (c.verb_index // 2, c.source_length // 4, c.frame_shape)
+        # Pair S/P examples within a bucket that includes the real WORDHOP
+        # marker slot. This prevents value from becoming recoverable from
+        # subject-region length or marker position.
+        key = (_source_marker_index(c) // 2, c.source_length // 4, _source_tail_after_marker(c) // 4, c.frame_shape)
         buckets[key][c.subject_number].append(c)
     for b in buckets.values():
         rng.shuffle(b["singular"])
@@ -517,6 +566,66 @@ def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.R
             best, best_score = chosen, score
     return best if best is not None else []
 
+
+
+
+def _choose_probe_with_heldout(
+    train_pool: list[SourceSentence],
+    heldout_pool: list[SourceSentence],
+    n_probe: int,
+    rng: random.Random,
+    min_held: int,
+    trials: int = 120,
+) -> tuple[list[SourceSentence], list[SourceSentence]]:
+    """Choose a balanced probe split while explicitly minimising v4.1 leaks.
+
+    The train/probe split is not semantically special for HOP; what matters is
+    that the probe is held out and cannot be solved by position-only rules. The
+    first v4.1b BabyLM run failed only on probe shortcut gates, so v4.1c gives
+    the probe first priority, then draws train from the remaining source pool.
+    """
+    if not _can_balance(train_pool, n_probe - min_held):
+        return [], []
+    best_probe: list[SourceSentence] | None = None
+    best_held: list[SourceSentence] = []
+    best_score = 999999.0
+    held_options = [min_held]
+    if min_held >= 20:
+        held_options += [max(0, min_held - 10), min(n_probe // 3, min_held + 10)]
+    held_options = sorted(set(h for h in held_options if 0 <= h <= n_probe))
+    for _ in range(trials):
+        rng.shuffle(train_pool)
+        rng.shuffle(heldout_pool)
+        for n_held in held_options:
+            held = []
+            if n_held:
+                if not _can_balance(heldout_pool, n_held):
+                    continue
+                held = _choose_balanced_low_leak(heldout_pool, n_held, rng, trials=4)
+                if len(held) != n_held:
+                    continue
+            used = {c.source_id for c in held}
+            seen_needed = n_probe - len(held)
+            seen_pool = [c for c in train_pool if c.source_id not in used]
+            if not _can_balance(seen_pool, seen_needed):
+                continue
+            seen = _choose_balanced_low_leak(seen_pool, seen_needed, rng, trials=6)
+            if len(seen) != seen_needed:
+                continue
+            probe = held + seen
+            if len({c.source_id for c in probe}) != n_probe or not _can_balance(probe, n_probe):
+                continue
+            score = _subset_leak_score(probe)
+            # Slightly prefer retaining a true held-out-frame slice when scores tie.
+            score -= 0.03 * len(held) / max(1, n_probe)
+            if score < best_score:
+                best_probe = probe
+                best_held = held
+                best_score = score
+    if best_probe is None:
+        return [], []
+    rng.shuffle(best_probe)
+    return best_probe, best_held
 
 def build_corpus_hop_dataset(
     corpus_globs: list[str] | None = None,
@@ -608,32 +717,34 @@ def build_corpus_hop_dataset(
     heldout_pool = [c for c in cands if c.frame_shape == heldout_frame]
     rng.shuffle(train_pool); rng.shuffle(heldout_pool)
 
-    train_base = _choose_balanced_low_leak(train_pool, n_train, rng, trials=180)
-    if len(train_base) != n_train:
-        raise ValueError(
-            f"Could not draw balanced train split from non-heldout frames. "
-            f"heldout_frame={heldout_frame}, train_pool_counts={dict(_marker_counts(train_pool))}"
-        )
-    train_ids = {c.source_id for c in train_base}
-
-    heldout_candidates = [c for c in heldout_pool if c.source_id not in train_ids]
-    seen_candidates = [c for c in train_pool if c.source_id not in train_ids]
-
-    n_held = min(max(20, n_probe // 10), n_probe // 3)
-    if not _can_balance(heldout_candidates, n_held):
-        n_held = 0
-    heldout_chosen = _choose_balanced_low_leak(heldout_candidates, n_held, rng, trials=80) if n_held else []
-    seen_needed = n_probe - len(heldout_chosen)
-    seen_chosen = _choose_balanced_low_leak(seen_candidates, seen_needed, rng, trials=220)
-    if len(seen_chosen) != seen_needed:
-        raise ValueError(
-            f"Could not draw balanced seen-frame probe split. "
-            f"needed={seen_needed}, seen_counts={dict(_marker_counts(seen_candidates))}"
-        )
-    probe_base = heldout_chosen + seen_chosen
+    # v4.1c: choose the held-out probe first because the hard scientific gate
+    # is defined on the probe distribution. Then draw train from remaining
+    # non-heldout sources. This avoids consuming the rare anti-correlated corpus
+    # examples in train and leaving a shortcut-prone probe.
+    n_held_min = min(max(20, n_probe // 10), n_probe // 3)
+    if not _can_balance(heldout_pool, n_held_min):
+        n_held_min = 0
+    probe_base, heldout_chosen = _choose_probe_with_heldout(
+        train_pool=train_pool,
+        heldout_pool=heldout_pool,
+        n_probe=n_probe,
+        rng=rng,
+        min_held=n_held_min,
+        trials=160,
+    )
     if len(probe_base) != n_probe or not _can_balance(probe_base, n_probe):
         raise ValueError(
-            f"Invalid probe split after balancing: n={len(probe_base)}, counts={dict(_marker_counts(probe_base))}"
+            f"Could not draw low-leak balanced probe split. "
+            f"heldout_frame={heldout_frame}, train_pool_counts={dict(_marker_counts(train_pool))}, "
+            f"heldout_counts={dict(_marker_counts(heldout_pool))}"
+        )
+    probe_ids = {c.source_id for c in probe_base}
+    train_candidates = [c for c in train_pool if c.source_id not in probe_ids]
+    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=160)
+    if len(train_base) != n_train:
+        raise ValueError(
+            f"Could not draw balanced train split from non-heldout/non-probe frames. "
+            f"heldout_frame={heldout_frame}, train_counts={dict(_marker_counts(train_candidates))}"
         )
     rng.shuffle(probe_base)
 
@@ -664,6 +775,8 @@ def build_corpus_hop_dataset(
         "candidate_marker_counts": dict(counts_all),
         "train_marker_counts": dict(_marker_counts(train_sources)),
         "probe_marker_counts": dict(_marker_counts(probe_sources)),
+        "probe_position_metrics_pre_transform": _subset_position_metrics(probe_sources),
+        "train_position_metrics_pre_transform": _subset_position_metrics(train_sources),
         "frame_counts_valid": dict(Counter(c.frame_shape for c in cands)),
         "frame_marker_counts_valid": {
             f: dict(_marker_counts(vals)) for f, vals in by_frame.items()
@@ -671,7 +784,7 @@ def build_corpus_hop_dataset(
         "rejection_reasons_total": dict(rejection_counter),
         "rejection_reasons_sampled": dict(Counter(r.reason for r in rejections)),
         "rejection_examples": [{"reason": r.reason, "sentence": r.sentence} for r in rejections[:50]],
-        "parser": "heuristic_v4_1b_strict_single_verb",
+        "parser": "heuristic_v4_1c_strict_single_verb",
         "single_qualifying_verb_policy": True,
     }
     return data, meta
