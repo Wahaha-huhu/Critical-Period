@@ -593,23 +593,21 @@ def _subset_leak_score(sources: list[SourceSentence]) -> float:
     # Smooth penalties below the hard gate, steep penalties above it.
     mode_excess = max(0.0, m["mode_marker_share"] - 0.145)
     corr_excess = max(0.0, m["marker_length_corr"] - 0.24)
-    tail_excess = max(0.0, m["tail_verb_corr"] - 0.19)
-    # v4.1d: the only remaining BabyLM failure after v4.1c was the
-    # WORDHOP C4 tail/verb correlation. This diagnostic matters because a
-    # fixed relation between where the verb appears and how much text remains
-    # after the marker can make placement partially length-anchored. Give it a
-    # hard excess penalty, while still preserving the earlier placement/value
-    # shortcut objectives.
+    tail_excess = max(0.0, m["tail_verb_corr"] - 0.18)
+    # v4.2c: on the real BabyLM spaCy set, the only remaining failure after
+    # v4.2b was C4 tail/verb correlation. Make this a first-class sampling
+    # objective. The gate itself is unchanged (<0.20); this score only chooses
+    # a less shortcut-prone subset from the same parse-valid candidate pool.
     return (
         12.0 * m["marker_length_corr"]
         + 2.0 * m["value_verb_corr"]
         + 2.0 * m["value_length_corr"]
-        + 6.0 * m["tail_verb_corr"]
+        + 40.0 * m["tail_verb_corr"]
         + 3.0 * m["mode_marker_share"]
         + 1.0 * m["mode_verb_share"]
         + 60.0 * mode_excess
         + 220.0 * corr_excess + 900.0 * corr_excess * corr_excess
-        + 120.0 * tail_excess
+        + 800.0 * tail_excess + 5000.0 * tail_excess * tail_excess
     )
 
 
@@ -631,7 +629,7 @@ def _draw_diverse(pool: list[SourceSentence], k: int, rng: random.Random) -> lis
         # Use the actual WORDHOP marker slot plus coarse length/tail buckets;
         # this directly attacks mode-slot and length-anchored shortcuts while
         # still preserving real-corpus sentence variation.
-        key = (_source_marker_index(c), c.source_length // 4, _source_tail_after_marker(c) // 4, c.frame_shape)
+        key = (c.verb_index // 2, _source_marker_index(c), c.source_length // 4, _source_tail_after_marker(c) // 4, c.frame_shape)
         by_key[key].append(c)
     for vals in by_key.values():
         rng.shuffle(vals)
@@ -675,7 +673,7 @@ def _choose_balanced(cands: list[SourceSentence], n: int, rng: random.Random) ->
         # Pair S/P examples within a bucket that includes the real WORDHOP
         # marker slot. This prevents value from becoming recoverable from
         # subject-region length or marker position.
-        key = (_source_marker_index(c) // 2, c.source_length // 4, _source_tail_after_marker(c) // 4, c.frame_shape)
+        key = (c.verb_index // 2, _source_marker_index(c) // 2, c.source_length // 4, _source_tail_after_marker(c) // 4, c.frame_shape)
         buckets[key][c.subject_number].append(c)
     for b in buckets.values():
         rng.shuffle(b["singular"])
@@ -746,6 +744,88 @@ def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.R
 
 
 
+def _same_probe_region(c: SourceSentence, heldout_frame: str) -> str:
+    return "heldout" if c.frame_shape == heldout_frame else "seen"
+
+
+def _refine_probe_by_swaps(
+    probe: list[SourceSentence],
+    seen_pool: list[SourceSentence],
+    heldout_pool: list[SourceSentence],
+    heldout_frame: str,
+    rng: random.Random,
+    trials: int = 8000,
+) -> list[SourceSentence]:
+    """Greedily swap same-value examples to reduce v4.1/v4.2 shortcut score.
+
+    Random subset selection can miss rare high-verb/long-tail or low-verb/short-tail
+    combinations needed to decorrelate tail length from verb position. This local
+    search preserves the probe size, exact S/P balance, source disjointness, and
+    held-out-frame count by only swapping an item with a replacement of the same
+    marker value and the same seen/held-out region.
+    """
+    if not probe:
+        return probe
+    current = list(probe)
+    current_ids = {c.source_id for c in current}
+    by_region_value: dict[tuple[str, str], list[SourceSentence]] = defaultdict(list)
+    for c in seen_pool:
+        if c.source_id not in current_ids and c.frame_shape != heldout_frame:
+            by_region_value[("seen", c.subject_number)].append(c)
+    for c in heldout_pool:
+        if c.source_id not in current_ids and c.frame_shape == heldout_frame:
+            by_region_value[("heldout", c.subject_number)].append(c)
+    for vals in by_region_value.values():
+        rng.shuffle(vals)
+
+    best_score = _subset_leak_score(current)
+    # Prioritise examples contributing to the remaining tail/verb correlation by
+    # trying random swaps, accepting only improvements. This is deliberately
+    # conservative: it never changes labels or thresholds.
+    for _ in range(trials):
+        i = rng.randrange(len(current))
+        old = current[i]
+        region = _same_probe_region(old, heldout_frame)
+        pool = by_region_value.get((region, old.subject_number), [])
+        if not pool:
+            continue
+        # Try a handful of replacements; keep the first improving one.
+        best_local = None
+        best_local_score = best_score
+        for _j in range(6):
+            if not pool:
+                break
+            repl = rng.choice(pool)
+            if repl.source_id in current_ids:
+                continue
+            candidate = list(current)
+            candidate[i] = repl
+            score = _subset_leak_score(candidate)
+            if score < best_local_score:
+                best_local = repl
+                best_local_score = score
+        if best_local is not None:
+            # Return old item to its pool and take replacement out logically via ids.
+            pool.append(old)
+            current_ids.remove(old.source_id)
+            current[i] = best_local
+            current_ids.add(best_local.source_id)
+            # Remove all copies of replacement from the pool if present.
+            by_region_value[(region, old.subject_number)] = [c for c in pool if c.source_id != best_local.source_id]
+            best_score = best_local_score
+            m = _subset_position_metrics(current)
+            if (
+                m["tail_verb_corr"] < 0.19
+                and m["marker_length_corr"] < 0.29
+                and m["mode_marker_share"] < 0.15
+                and m["value_verb_corr"] < 0.20
+                and m["value_length_corr"] < 0.20
+            ):
+                break
+    rng.shuffle(current)
+    return current
+
+
 def _choose_probe_with_heldout(
     train_pool: list[SourceSentence],
     heldout_pool: list[SourceSentence],
@@ -792,12 +872,25 @@ def _choose_probe_with_heldout(
             probe = held + seen
             if len({c.source_id for c in probe}) != n_probe or not _can_balance(probe, n_probe):
                 continue
+            # v4.2c local refinement: preserve the held-out count and S/P balance,
+            # but search for same-value swaps that reduce residual tail/verb
+            # correlation. This targets the one remaining v4.2b failure.
+            probe = _refine_probe_by_swaps(
+                probe=probe,
+                seen_pool=train_pool,
+                heldout_pool=heldout_pool,
+                heldout_frame=heldout_pool[0].frame_shape if heldout_pool else "",
+                rng=rng,
+                trials=1200,
+            )
+            if len({c.source_id for c in probe}) != n_probe or not _can_balance(probe, n_probe):
+                continue
             score = _subset_leak_score(probe)
             # Slightly prefer retaining a true held-out-frame slice when scores tie.
             score -= 0.03 * len(held) / max(1, n_probe)
             if score < best_score:
                 best_probe = probe
-                best_held = held
+                best_held = [c for c in probe if c.frame_shape == (heldout_pool[0].frame_shape if heldout_pool else "")]
                 best_score = score
     if best_probe is None:
         return [], []
@@ -947,7 +1040,7 @@ def build_corpus_hop_dataset(
         n_probe=n_probe,
         rng=rng,
         min_held=n_held_min,
-        trials=1200,
+        trials=1600,
     )
     if len(probe_base) != n_probe or not _can_balance(probe_base, n_probe):
         raise ValueError(
@@ -957,7 +1050,7 @@ def build_corpus_hop_dataset(
         )
     probe_ids = {c.source_id for c in probe_base}
     train_candidates = [c for c in train_pool if c.source_id not in probe_ids]
-    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=1200)
+    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=1600)
     if len(train_base) != n_train:
         raise ValueError(
             f"Could not draw balanced train split from non-heldout/non-probe frames. "
