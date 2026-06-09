@@ -592,7 +592,7 @@ def _subset_leak_score(sources: list[SourceSentence]) -> float:
     m = _subset_position_metrics(sources)
     # Smooth penalties below the hard gate, steep penalties above it.
     mode_excess = max(0.0, m["mode_marker_share"] - 0.145)
-    corr_excess = max(0.0, m["marker_length_corr"] - 0.28)
+    corr_excess = max(0.0, m["marker_length_corr"] - 0.24)
     tail_excess = max(0.0, m["tail_verb_corr"] - 0.19)
     # v4.1d: the only remaining BabyLM failure after v4.1c was the
     # WORDHOP C4 tail/verb correlation. This diagnostic matters because a
@@ -601,14 +601,14 @@ def _subset_leak_score(sources: list[SourceSentence]) -> float:
     # hard excess penalty, while still preserving the earlier placement/value
     # shortcut objectives.
     return (
-        4.0 * m["marker_length_corr"]
+        12.0 * m["marker_length_corr"]
         + 2.0 * m["value_verb_corr"]
         + 2.0 * m["value_length_corr"]
         + 6.0 * m["tail_verb_corr"]
         + 3.0 * m["mode_marker_share"]
         + 1.0 * m["mode_verb_share"]
         + 60.0 * mode_excess
-        + 25.0 * corr_excess
+        + 220.0 * corr_excess + 900.0 * corr_excess * corr_excess
         + 120.0 * tail_excess
     )
 
@@ -727,7 +727,7 @@ def _choose_balanced(cands: list[SourceSentence], n: int, rng: random.Random) ->
     return chosen
 
 
-def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.Random, trials: int = 260) -> list[SourceSentence]:
+def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.Random, trials: int = 900) -> list[SourceSentence]:
     best: list[SourceSentence] | None = None
     best_score = 999.0
     if not _can_balance(cands, n):
@@ -752,7 +752,7 @@ def _choose_probe_with_heldout(
     n_probe: int,
     rng: random.Random,
     min_held: int,
-    trials: int = 260,
+    trials: int = 900,
 ) -> tuple[list[SourceSentence], list[SourceSentence]]:
     """Choose a balanced probe split while explicitly minimising v4.1 leaks.
 
@@ -947,7 +947,7 @@ def build_corpus_hop_dataset(
         n_probe=n_probe,
         rng=rng,
         min_held=n_held_min,
-        trials=360,
+        trials=1200,
     )
     if len(probe_base) != n_probe or not _can_balance(probe_base, n_probe):
         raise ValueError(
@@ -957,7 +957,7 @@ def build_corpus_hop_dataset(
         )
     probe_ids = {c.source_id for c in probe_base}
     train_candidates = [c for c in train_pool if c.source_id not in probe_ids]
-    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=360)
+    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=1200)
     if len(train_base) != n_train:
         raise ValueError(
             f"Could not draw balanced train split from non-heldout/non-probe frames. "
