@@ -13,6 +13,7 @@ import torch
 
 from cplm.pilot.textlm import (
     PackedTextDataset,
+    MarkerOnlyDataset,
     TextVocab,
     build_tiny_model,
     choose_device,
@@ -107,9 +108,18 @@ def main() -> None:
 
     ctx = int(cfg["model"]["context_length"])
     base_ds = PackedTextDataset([vocab.encode(t) for t in base_texts], vocab.pad_id, ctx, seed=seed)
+    marker_only_loss = bool(cfg.get("injection", {}).get("marker_only_loss", False))
     arm_datasets = {
-        "wordhop": PackedTextDataset([vocab.encode(r["text"]) for r in wordhop_train], vocab.pad_id, ctx, seed=seed + 11),
-        "nohop": PackedTextDataset([vocab.encode(r["text"]) for r in nohop_train], vocab.pad_id, ctx, seed=seed + 12),
+        "wordhop": (
+            MarkerOnlyDataset(wordhop_train, vocab, vocab.pad_id, ctx, seed=seed + 11)
+            if marker_only_loss
+            else PackedTextDataset([vocab.encode(r["text"]) for r in wordhop_train], vocab.pad_id, ctx, seed=seed + 11)
+        ),
+        "nohop": (
+            MarkerOnlyDataset(nohop_train, vocab, vocab.pad_id, ctx, seed=seed + 12)
+            if marker_only_loss
+            else PackedTextDataset([vocab.encode(r["text"]) for r in nohop_train], vocab.pad_id, ctx, seed=seed + 12)
+        ),
         "facts": PackedTextDataset([vocab.encode(r["text"]) for r in facts_train], vocab.pad_id, ctx, seed=seed + 13),
     }
 
@@ -263,6 +273,9 @@ def main() -> None:
     report.append("## Interpretation gate")
     report.append("")
     report.append("This fast pilot only checks the training, checkpoint, scoring, injection, and washout path. It is not the final BabyLM evidence.")
+    if bool(cfg.get("injection", {}).get("marker_only_loss", False)):
+        report.append("")
+        report.append("Marker-focused diagnostic mode was enabled: structural injection loss was applied only at the marker token position. This is for learnability/debugging, not for the final thesis experiment objective.")
     (out_dir / "pilot_report.md").write_text("\n".join(report), encoding="utf-8")
     dump_json({"run_id": run_id, "output_dir": str(out_dir), "device": str(device), "n_vocab": len(vocab.id_to_token), "n_summary_rows": len(summary_rows)}, out_dir / "manifest.json")
     print(f"Wrote {out_dir}", flush=True)

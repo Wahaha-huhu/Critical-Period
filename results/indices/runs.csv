@@ -1,7 +1,0 @@
-run_id,stage,group_id,schedule,onset_fraction,onset_step,seed,readout,created_unix,config_hash,repo_git_sha
-smoke__s1_decay__onset-0p02__seed-0__fixed_age,smoke,stage0_smoke__20260608_214150,s1_decay,0.02,0,0,fixed_age,1780954910.0064666,7535b6b6a25f,
-smoke__s1_decay__onset-0p6__seed-0__fixed_age,smoke,stage0_smoke__20260608_214150,s1_decay,0.6,1,0,fixed_age,1780954911.2502422,92c85b62ac97,
-smoke__s2_constant__onset-0p02__seed-0__fixed_age,smoke,stage0_smoke__20260608_214150,s2_constant,0.02,0,0,fixed_age,1780954911.2805936,bf2fd0733f16,
-smoke__s2_constant__onset-0p6__seed-0__fixed_age,smoke,stage0_smoke__20260608_214150,s2_constant,0.6,1,0,fixed_age,1780954911.30451,027248f91fb1,
-smoke__s1_decay__onset-0p6__seed-0__fixed_dose_realistic,smoke,stage0_smoke__20260608_214150,s1_decay,0.6,1,0,fixed_dose_realistic,1780954911.3291543,80dd11216965,
-smoke__s2_constant__onset-0p6__seed-0__fixed_dose_clean,smoke,stage0_smoke__20260608_214150,s2_constant,0.6,1,0,fixed_dose_clean,1780954911.3524306,896a77b69c76,

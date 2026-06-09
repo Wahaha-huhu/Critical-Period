@@ -93,6 +93,63 @@ class PackedTextDataset:
         return x.to(device), y.to(device), token_count
 
 
+class MarkerOnlyDataset:
+    """Dataset that trains only the structural marker token.
+
+    This is a diagnostic dataset, not the final experiment objective. It keeps the
+    same marker prefix as the normal full-sentence LM objective but masks every
+    target except the marker token. If this succeeds while full-sentence training
+    fails, the structural arm is learnable but diluted in the ordinary LM loss.
+    """
+
+    def __init__(self, records: list[dict[str, Any]], vocab: TextVocab, pad_id: int, context_length: int, seed: int = 0) -> None:
+        self.examples: list[tuple[list[int], int]] = []
+        self.pad_id = int(pad_id)
+        self.context_length = int(context_length)
+        self.rng = random.Random(seed)
+        for rec in records:
+            tokens = list(rec.get("tokens") or tokenize_text(rec["text"]))
+            pos = int(rec["metric_targets"]["marker_value_margin"]["position"])
+            if pos <= 0 or pos >= len(tokens):
+                raise ValueError(f"invalid marker position {pos} for record {rec.get('source_id', '<unknown>')}")
+            seq = vocab.encode_tokens(tokens, add_special=True)
+            marker_seq_pos = pos + 1  # account for <bos>
+            if seq[marker_seq_pos] not in (vocab.token_to_id.get("S"), vocab.token_to_id.get("P")):
+                raise ValueError("marker position does not point to S/P token")
+            self.examples.append((seq, marker_seq_pos))
+        if not self.examples:
+            raise ValueError("MarkerOnlyDataset requires at least one record")
+
+    def make_batch(self, batch_size: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, int]:
+        x = torch.full((batch_size, self.context_length), self.pad_id, dtype=torch.long)
+        y = torch.full((batch_size, self.context_length), -100, dtype=torch.long)
+        token_count = 0
+        for b in range(batch_size):
+            seq, marker_seq_pos = self.rng.choice(self.examples)
+            L_full = len(seq)
+            if L_full <= self.context_length:
+                start = 0
+                window = seq
+            else:
+                # Crop while preserving the token before the marker and the marker.
+                min_start = max(0, marker_seq_pos - self.context_length + 1)
+                max_start = min(marker_seq_pos - 1, L_full - self.context_length)
+                if max_start < min_start:
+                    start = min_start
+                else:
+                    start = self.rng.randint(min_start, max_start)
+                window = seq[start : start + self.context_length]
+            L = min(len(window), self.context_length)
+            x[b, :L] = torch.tensor(window[:L], dtype=torch.long)
+            label_index = marker_seq_pos - start - 1
+            if 0 <= label_index < L:
+                y[b, label_index] = seq[marker_seq_pos]
+                token_count += 1
+            else:
+                raise RuntimeError("marker label fell outside the cropped window")
+        return x.to(device), y.to(device), token_count
+
+
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with Path(path).open("r", encoding="utf-8") as f:
