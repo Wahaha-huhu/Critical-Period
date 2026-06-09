@@ -1,0 +1,11 @@
+stage: injection_dataset_milestone
+seed: 0
+output_dir: results/dataset_validation/injection_milestone
+wordhop:
+  n_train: 2000
+  n_probe: 500
+  hop_distance: 4
+  include_tokenhop: true
+facts:
+  n_train: 200
+  n_probe: 50

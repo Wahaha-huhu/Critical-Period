@@ -79,3 +79,45 @@ The summary command writes CSV files and plots for training loss, validation pro
 - S1 holds the terminal learning rate after the calibrated budget `T` during fixed-dose continuation.
 - S2 fixed-dose is the clean dose-and-rate-matched readout; S1 fixed-dose is the realistic low-rate readout.
 - Stage 0 intentionally excludes Pythia, BabyLM, full onset grid, SVD tracking, and burst washout.
+
+## Injection dataset milestone
+
+The first implementation milestone builds the probe package for the revised critical-period programme:
+
+- `WORDHOP` structural arm, four words after the lemmatised verb with punctuation skipped.
+- `NOHOP` near-native within-rule control, marker immediately after the lemmatised verb.
+- `TOKENHOP` optional pilot difficulty step.
+- Fictional-fact control with memorisation, semantic rephrasing, and simple compositional probes.
+
+Build and validate the dataset package:
+
+```bash
+python scripts/build_injection_datasets.py --config configs/injection_datasets.yaml
+```
+
+Outputs are written to `results/dataset_validation/injection_milestone/` by default:
+
+```text
+config_resolved.yaml
+dataset_report.md
+example_sheet.md
+scoring_sanity_checks.csv
+datasets/
+  wordhop_train.jsonl
+  wordhop_probe.jsonl
+  nohop_train.jsonl
+  nohop_probe.jsonl
+  tokenhop_train.jsonl
+  tokenhop_probe.jsonl
+  facts_train.jsonl
+  facts_probe.jsonl
+```
+
+Revalidate an existing generated package:
+
+```bash
+python scripts/validate_injection_datasets.py \
+  --dataset-dir results/dataset_validation/injection_milestone/datasets
+```
+
+Do not start BabyLM training until the dataset report passes and the example sheet has been manually inspected.
