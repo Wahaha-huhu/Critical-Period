@@ -1,0 +1,18 @@
+stage: corpus_hop_dataset_v4_1
+seed: 0
+output_dir: results/dataset_validation/corpus_hop_v4_1
+corpus:
+  # Put local BabyLM text globs here, e.g. /data/babylm_10m/**/*.txt
+  globs: []
+  max_sentences: 200000
+  use_demo_if_no_corpus: true
+wordhop:
+  n_train: 1000
+  n_probe: 300
+  hop_distance: 4
+  include_tokenhop: false
+facts:
+  n_train: 200
+  n_probe: 50
+naturalness:
+  proxy_threshold: 1.5

@@ -143,3 +143,14 @@ python scripts/run_babylm_debug_milestone.py --config configs/babylm_debug_backb
 ```
 
 The debug script can read a local corpus via `corpus.globs` in the config. If no corpus files match, it falls back to the validated v4 unmarked source-text stream; this is only a smoke-test fallback, not BabyLM evidence.
+
+## v4.1 corpus-derived HOP path
+
+For BabyLM/Pythia-tier structural injection, use the corpus-derived builder rather than the synthetic v4 generator:
+
+```bash
+PYTHONPATH=src python scripts/build_corpus_hop_datasets.py \
+  --config configs/corpus_hop_babylm_v41.yaml
+```
+
+Set `corpus.globs` in the config to local BabyLM/Pythia-domain text. If no files are matched and `use_demo_if_no_corpus: true`, the builder uses a natural-looking demo fallback only for smoke testing.

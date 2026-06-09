@@ -246,6 +246,43 @@ def validate_structural_pair(
     last_attr_acc = last_attr_acc / max(1, len(opp))
     subj_acc = subj_acc / max(1, len(opp))
 
+    # v4.1 value-from-position baseline: predict S/P from verb index, sentence
+    # length bucket, and construction/frame only. This catches residual leakage
+    # where subject number is encoded by subject-region length or frame shape.
+    value_majority = _mode([r.get("marker") for r in train_records], "S")
+    value_bucket_modes: dict[tuple[int, int, str], str] = {}
+    value_bucket_values: defaultdict[tuple[int, int, str], list[str]] = defaultdict(list)
+    for r in train_records:
+        key = (
+            _length_bucket(int(r.get("verb_index_transformed", 0)), 2),
+            _length_bucket(int(r.get("source_length", len(r.get("tokens", [])) - 1)), 4),
+            str(r.get("frame_shape")),
+        )
+        value_bucket_values[key].append(str(r.get("marker")))
+    for key, vals in value_bucket_values.items():
+        if len(vals) >= 3:
+            value_bucket_modes[key] = _mode(vals, value_majority)
+    value_known = 0
+    value_correct = 0
+    value_correct_known = 0
+    for r in probe_records:
+        key = (
+            _length_bucket(int(r.get("verb_index_transformed", 0)), 2),
+            _length_bucket(int(r.get("source_length", len(r.get("tokens", [])) - 1)), 4),
+            str(r.get("frame_shape")),
+        )
+        pred = value_bucket_modes.get(key, value_majority)
+        if key in value_bucket_modes:
+            value_known += 1
+            value_correct_known += int(pred == str(r.get("marker")))
+        value_correct += int(pred == str(r.get("marker")))
+    value_from_position_acc = value_correct / max(1, len(probe_records))
+    value_from_position_known_acc = value_correct_known / value_known if value_known else 0.0
+    value_from_position_coverage = value_known / max(1, len(probe_records))
+    probe_marker_values = [1 if r.get("marker") == "P" else 0 for r in probe_records]
+    value_verb_corr = abs(_corr(probe_marker_values, verb_indices))
+    value_length_corr = abs(_corr(probe_marker_values, lengths))
+
     # Hop divergence for TOKENHOP vs WORDHOP when source_ids line up.
     hop_divergence = None
     if name == "tokenhop":
@@ -286,6 +323,15 @@ def validate_structural_pair(
             "last_attractor_value_accuracy": last_attr_acc,
             "subject_oracle_accuracy": subj_acc,
         },
+        "value_from_position_gate": {
+            "accuracy": value_from_position_acc,
+            "known_bucket_accuracy": value_from_position_known_acc,
+            "known_bucket_coverage": value_from_position_coverage,
+            "abs_value_verb_index_correlation": value_verb_corr,
+            "abs_value_length_correlation": value_length_corr,
+            "pass_threshold_accuracy": 0.60,
+            "pass_threshold_correlations": 0.20,
+        },
         "heldout_frame_integrity": {
             "heldout_frames": heldout_frames,
             "heldout_frame_leak_into_train": heldout_frame_leak,
@@ -320,6 +366,12 @@ def validate_structural_pair(
             errors.append(f"wordhop subject oracle on opposite attractors too low: {subj_acc:.3f}")
         if nearest_acc > 0.25:
             errors.append(f"wordhop nearest-noun shortcut too high on opposite attractors: {nearest_acc:.3f}")
+        if value_from_position_acc >= 0.60:
+            errors.append(f"wordhop F2 value-from-position baseline too high: {value_from_position_acc:.3f} >= 0.60")
+        if value_verb_corr >= 0.20:
+            errors.append(f"wordhop F2 value/verb-index correlation too high: {value_verb_corr:.3f} >= 0.20")
+        if value_length_corr >= 0.20:
+            errors.append(f"wordhop F2 value/length correlation too high: {value_length_corr:.3f} >= 0.20")
         if not heldout_frames:
             errors.append("wordhop C7 no held-out frame shapes in probe")
         if heldout_frame_leak:

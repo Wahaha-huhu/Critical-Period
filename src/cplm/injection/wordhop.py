@@ -342,13 +342,17 @@ def _source_signature(src: SourceSentence) -> tuple:
 def _sample_specs(n: int, split: str, rng: random.Random) -> list[dict]:
     specs: list[dict] = []
     for i in range(n):
+        # v4.1: subject value must not be coupled to frame split or verb-index
+        # family. Use one bit for S/P and an independent bit for seen/held-out
+        # frame assignment in probe.
         subject_number = "singular" if i % 2 == 0 else "plural"
         if split == "train":
             frame_family = rng.choice(TRAIN_FRAME_FAMILIES)
             frame_split_type = "train_frame"
         else:
-            # Half the probe uses seen frame families, half uses held-out frames.
-            if i % 2 == 0:
+            # Half the probe uses seen frame families, half uses held-out frames,
+            # but each frame side still contains both S and P examples.
+            if (i // 2) % 2 == 0:
                 frame_family = rng.choice(TRAIN_FRAME_FAMILIES)
                 frame_split_type = "seen_frame"
             else:
