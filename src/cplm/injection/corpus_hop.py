@@ -280,7 +280,7 @@ def extract_candidate(sentence: str, source_id: str, split: str = "pool", min_le
         window_punctuation_count=punct_count,
         tail_word_length=sum(1 for tok in tokens[verb_index + 1 :] if is_word_token(tok)),
         source_length=len(tokens),
-        metadata={"parser": "heuristic_v4_1c_strict_single_verb", "original_sentence": sentence},
+        metadata={"parser": "heuristic_v4_1d_strict_single_verb", "original_sentence": sentence},
     ), None
 
 
@@ -424,15 +424,23 @@ def _subset_leak_score(sources: list[SourceSentence]) -> float:
     # Smooth penalties below the hard gate, steep penalties above it.
     mode_excess = max(0.0, m["mode_marker_share"] - 0.145)
     corr_excess = max(0.0, m["marker_length_corr"] - 0.28)
+    tail_excess = max(0.0, m["tail_verb_corr"] - 0.19)
+    # v4.1d: the only remaining BabyLM failure after v4.1c was the
+    # WORDHOP C4 tail/verb correlation. This diagnostic matters because a
+    # fixed relation between where the verb appears and how much text remains
+    # after the marker can make placement partially length-anchored. Give it a
+    # hard excess penalty, while still preserving the earlier placement/value
+    # shortcut objectives.
     return (
         4.0 * m["marker_length_corr"]
         + 2.0 * m["value_verb_corr"]
         + 2.0 * m["value_length_corr"]
-        + 1.5 * m["tail_verb_corr"]
+        + 6.0 * m["tail_verb_corr"]
         + 3.0 * m["mode_marker_share"]
         + 1.0 * m["mode_verb_share"]
         + 60.0 * mode_excess
         + 25.0 * corr_excess
+        + 120.0 * tail_excess
     )
 
 
@@ -550,7 +558,7 @@ def _choose_balanced(cands: list[SourceSentence], n: int, rng: random.Random) ->
     return chosen
 
 
-def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.Random, trials: int = 120) -> list[SourceSentence]:
+def _choose_balanced_low_leak(cands: list[SourceSentence], n: int, rng: random.Random, trials: int = 260) -> list[SourceSentence]:
     best: list[SourceSentence] | None = None
     best_score = 999.0
     if not _can_balance(cands, n):
@@ -575,7 +583,7 @@ def _choose_probe_with_heldout(
     n_probe: int,
     rng: random.Random,
     min_held: int,
-    trials: int = 120,
+    trials: int = 260,
 ) -> tuple[list[SourceSentence], list[SourceSentence]]:
     """Choose a balanced probe split while explicitly minimising v4.1 leaks.
 
@@ -730,7 +738,7 @@ def build_corpus_hop_dataset(
         n_probe=n_probe,
         rng=rng,
         min_held=n_held_min,
-        trials=160,
+        trials=360,
     )
     if len(probe_base) != n_probe or not _can_balance(probe_base, n_probe):
         raise ValueError(
@@ -740,7 +748,7 @@ def build_corpus_hop_dataset(
         )
     probe_ids = {c.source_id for c in probe_base}
     train_candidates = [c for c in train_pool if c.source_id not in probe_ids]
-    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=160)
+    train_base = _choose_balanced_low_leak(train_candidates, n_train, rng, trials=360)
     if len(train_base) != n_train:
         raise ValueError(
             f"Could not draw balanced train split from non-heldout/non-probe frames. "
@@ -784,7 +792,7 @@ def build_corpus_hop_dataset(
         "rejection_reasons_total": dict(rejection_counter),
         "rejection_reasons_sampled": dict(Counter(r.reason for r in rejections)),
         "rejection_examples": [{"reason": r.reason, "sentence": r.sentence} for r in rejections[:50]],
-        "parser": "heuristic_v4_1c_strict_single_verb",
+        "parser": "heuristic_v4_1d_strict_single_verb",
         "single_qualifying_verb_policy": True,
     }
     return data, meta
