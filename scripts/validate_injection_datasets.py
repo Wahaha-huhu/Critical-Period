@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 
 from cplm.injection.io import read_jsonl
-from cplm.injection.validation import validate_disjoint_texts, validate_fact_records, validate_wordhop_records, write_dataset_report
+from cplm.injection.validation import validate_fact_records, validate_hop_divergence, validate_structural_pair, validate_wordhop_records, write_dataset_report
 
 
 def main() -> None:
@@ -28,9 +28,13 @@ def main() -> None:
         train_key = f"{arm}_train"
         probe_key = f"{arm}_probe"
         if train_key in loaded and probe_key in loaded:
-            errs, summary = validate_disjoint_texts(loaded[train_key], loaded[probe_key], arm)
-            summaries[f"{arm}_split"] = summary
-            errors.extend(errs)
+            errs, summary = validate_structural_pair(loaded[train_key], loaded[probe_key], arm)
+            summaries[f"{arm}_v4_gate"] = summary
+            errors.extend([f"{arm}: {e}" for e in errs])
+    if "wordhop_probe" in loaded and "tokenhop_probe" in loaded:
+        errs, summary = validate_hop_divergence(loaded["wordhop_probe"], loaded["tokenhop_probe"])
+        summaries["tokenhop_wordhop_divergence"] = summary
+        errors.extend([f"tokenhop_wordhop_divergence: {e}" for e in errs])
     facts_train = d / "facts_train.jsonl"
     facts_probe = d / "facts_probe.jsonl"
     if facts_train.exists() and facts_probe.exists():

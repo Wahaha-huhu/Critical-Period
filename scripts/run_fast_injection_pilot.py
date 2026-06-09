@@ -23,9 +23,22 @@ from cplm.pilot.textlm import (
 )
 
 
+def sanitize_json(obj: Any) -> Any:
+    # Write strict JSON: replace NaN/Inf with null and recurse through containers.
+    if isinstance(obj, float):
+        if obj != obj or obj in {float("inf"), float("-inf")}:
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_json(v) for v in obj]
+    return obj
+
+
 def dump_json(obj: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(json.dumps(sanitize_json(obj), indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -110,10 +123,16 @@ def main() -> None:
     if 0 in checkpoints:
         torch.save({"model": model.state_dict(), "step": 0}, ckpt_dir / "step_0.pt")
 
-    # Manual base loop so we can save checkpoints.
+    # Manual base loop so we can save checkpoints. Keep AdamW state across chunks;
+    # chunking is only for checkpoint I/O, not for resetting optimization.
     total_steps = int(base_cfg["steps"])
     chunk_start = 1
     last_saved = 0
+    base_optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(base_cfg["lr"]),
+        weight_decay=float(base_cfg.get("weight_decay", 0.0)),
+    )
     for ckpt in sorted([c for c in checkpoints if c > 0]):
         steps_to_run = ckpt - last_saved
         if steps_to_run <= 0:
@@ -130,9 +149,11 @@ def main() -> None:
             precision=precision,
             log_interval=int(base_cfg.get("log_interval", 20)),
             log_path=out_dir / "metrics_base_train.jsonl",
+            optimizer=base_optimizer,
+            global_step_offset=last_saved,
         )
         last_saved = ckpt
-        torch.save({"model": model.state_dict(), "step": ckpt, "stats": stats}, ckpt_dir / f"step_{ckpt}.pt")
+        torch.save({"model": model.state_dict(), "optimizer": base_optimizer.state_dict(), "step": ckpt, "stats": stats}, ckpt_dir / f"step_{ckpt}.pt")
         print(f"BASE checkpoint step={ckpt} loss={stats['ema_loss']:.4f} tok/s={stats['tokens_per_sec']:.0f}", flush=True)
 
     arms = list(cfg["injection"].get("arms", ["wordhop", "nohop", "facts"]))

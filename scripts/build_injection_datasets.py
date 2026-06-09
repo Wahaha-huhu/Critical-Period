@@ -8,7 +8,7 @@ from pathlib import Path
 from cplm.config import load_yaml, save_yaml, config_hash
 from cplm.injection.facts import build_factual_dataset
 from cplm.injection.io import write_jsonl
-from cplm.injection.validation import validate_disjoint_texts, validate_fact_records, validate_wordhop_records, write_dataset_report
+from cplm.injection.validation import validate_fact_records, validate_hop_divergence, validate_structural_pair, validate_wordhop_records, write_dataset_report
 from cplm.injection.wordhop import build_wordhop_dataset
 
 
@@ -52,14 +52,19 @@ def main() -> None:
             errs, summary = validate_wordhop_records(wordhop[key])
             summaries[key] = summary
             errors.extend([f"{key}: {e}" for e in errs])
-    # Structural probes must be held out from structural injection training.
+    # Strengthened v4 structural gates.  WORDHOP gets the full position-only
+    # rejection gate; NOHOP/TOKENHOP keep split and consistency diagnostics.
     for arm in ["nohop", "tokenhop", "wordhop"]:
         train_key = f"{arm}_train"
         probe_key = f"{arm}_probe"
         if train_key in wordhop and probe_key in wordhop:
-            split_errors, split_summary = validate_disjoint_texts(wordhop[train_key], wordhop[probe_key], arm)
-            summaries[f"{arm}_split"] = split_summary
+            split_errors, split_summary = validate_structural_pair(wordhop[train_key], wordhop[probe_key], arm)
+            summaries[f"{arm}_v4_gate"] = split_summary
             errors.extend([f"{arm}: {e}" for e in split_errors])
+    if "wordhop_probe" in wordhop and "tokenhop_probe" in wordhop:
+        hop_errors, hop_summary = validate_hop_divergence(wordhop["wordhop_probe"], wordhop["tokenhop_probe"])
+        summaries["tokenhop_wordhop_divergence"] = hop_summary
+        errors.extend([f"tokenhop_wordhop_divergence: {e}" for e in hop_errors])
 
     fact_errors, fact_summary = validate_fact_records(facts["facts_train"], facts["facts_probe"])
     summaries["facts"] = fact_summary

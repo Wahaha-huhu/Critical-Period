@@ -151,7 +151,7 @@ def next_token_logprobs(model: torch.nn.Module, prefix_ids: list[int], device: t
 
 
 @torch.no_grad()
-def score_structural(model: torch.nn.Module, probes: list[dict[str, Any]], vocab: TextVocab, device: torch.device, limit: int | None = None) -> dict[str, float]:
+def score_structural(model: torch.nn.Module, probes: list[dict[str, Any]], vocab: TextVocab, device: torch.device, limit: int | None = None) -> dict[str, Any]:
     rows = probes[:limit] if limit else probes
     margins: list[float] = []
     placement_margins: list[float] = []
@@ -180,12 +180,12 @@ def score_structural(model: torch.nn.Module, probes: list[dict[str, Any]], vocab
             lps_nohop = next_token_logprobs(model, [vocab.token_to_id[t] for t in nohop_prefix], device)
             placement_margins.append(float(lps[vocab.token_to_id[good]] - lps_nohop[vocab.token_to_id[good]]))
     n = max(1, len(rows))
-    out: dict[str, float] = {
+    out: dict[str, Any] = {
         "n": float(len(rows)),
         "accuracy": correct / n,
-        "mean_margin": float(np.mean(margins)) if margins else float("nan"),
-        "median_margin": float(np.median(margins)) if margins else float("nan"),
-        "placement_selectivity_proxy": float(np.mean(placement_margins)) if placement_margins else float("nan"),
+        "mean_margin": float(np.mean(margins)) if margins else None,
+        "median_margin": float(np.median(margins)) if margins else None,
+        "placement_selectivity_proxy": float(np.mean(placement_margins)) if placement_margins else None,
     }
     for name, vals in by_template.items():
         out[f"acc_template_{name}"] = float(np.mean(vals))
@@ -195,7 +195,7 @@ def score_structural(model: torch.nn.Module, probes: list[dict[str, Any]], vocab
 
 
 @torch.no_grad()
-def score_facts(model: torch.nn.Module, probes: list[dict[str, Any]], vocab: TextVocab, device: torch.device, limit: int | None = None) -> dict[str, float]:
+def score_facts(model: torch.nn.Module, probes: list[dict[str, Any]], vocab: TextVocab, device: torch.device, limit: int | None = None) -> dict[str, Any]:
     rows = probes[:limit] if limit else probes
     logps: list[float] = []
     by_depth: dict[str, list[float]] = {}
@@ -212,10 +212,10 @@ def score_facts(model: torch.nn.Module, probes: list[dict[str, Any]], vocab: Tex
         avg = total / max(1, len(target_tokens))
         logps.append(avg)
         by_depth.setdefault(str(rec.get("depth", "unknown")), []).append(avg)
-    out: dict[str, float] = {
+    out: dict[str, Any] = {
         "n": float(len(rows)),
-        "mean_target_logprob_per_token": float(np.mean(logps)) if logps else float("nan"),
-        "median_target_logprob_per_token": float(np.median(logps)) if logps else float("nan"),
+        "mean_target_logprob_per_token": float(np.mean(logps)) if logps else None,
+        "median_target_logprob_per_token": float(np.median(logps)) if logps else None,
     }
     for depth, vals in by_depth.items():
         out[f"mean_logprob_{depth}"] = float(np.mean(vals))
@@ -235,8 +235,12 @@ def train_steps(
     precision: str,
     log_interval: int,
     log_path: Path,
+    optimizer: torch.optim.Optimizer | None = None,
+    global_step_offset: int = 0,
 ) -> dict[str, float]:
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Keep optimizer state across chunks when an optimizer is provided.
+    # This is important when training is segmented only to save checkpoints.
+    opt = optimizer if optimizer is not None else torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     started = time.time()
     ema = float("nan")
     last = float("nan")
@@ -244,7 +248,8 @@ def train_steps(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
         for step in range(1, int(steps) + 1):
-            cur_lr = linear_warmup_lr(step, lr, warmup_steps)
+            abs_step = int(global_step_offset) + step
+            cur_lr = linear_warmup_lr(abs_step, lr, warmup_steps)
             set_lr(opt, cur_lr)
             x, y, toks = dataset.make_batch(batch_size, device)
             opt.zero_grad(set_to_none=True)
@@ -260,7 +265,7 @@ def train_steps(
             tokens_total += int(toks)
             if step == 1 or step % log_interval == 0 or step == steps:
                 elapsed = time.time() - started
-                rec = {"step": step, "loss": last, "ema_loss": ema, "lr": cur_lr, "elapsed_sec": elapsed, "tokens_total": tokens_total, "tokens_per_sec": tokens_total / max(elapsed, 1e-9)}
+                rec = {"step": abs_step, "local_step": step, "loss": last, "ema_loss": ema, "lr": cur_lr, "elapsed_sec": elapsed, "tokens_total": tokens_total, "tokens_per_sec": tokens_total / max(elapsed, 1e-9)}
                 f.write(json.dumps(rec) + "\n")
                 f.flush()
     elapsed = time.time() - started
