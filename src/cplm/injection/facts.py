@@ -61,14 +61,25 @@ class FictionalFact:
 
 
 def _sample_facts(n: int, split: str, rng: random.Random, offset: int = 0) -> list[FictionalFact]:
+    """Sample fictional facts with globally unique entities and discoverers.
+
+    The factual arm is evaluated by recall and simple compositional probes.  If
+    the same mineral name or chemist name appears with conflicting attributes,
+    the probe becomes ambiguous and can no longer measure retention of an
+    injected fact.  We therefore make the entity and discoverer unique by
+    construction, while keeping the surface form close to ordinary prose.
+    """
     facts: list[FictionalFact] = []
-    used_entities: set[str] = set()
     for i in range(n):
-        # Add suffixes once pools wrap so entities remain unique and fictional.
-        base_entity = MINERALS[(i + offset) % len(MINERALS)]
-        entity = base_entity if base_entity not in used_entities else f"{base_entity}{i + offset}"
-        used_entities.add(entity)
-        discoverer = f"{rng.choice(FIRST)} {rng.choice(LAST)}"
+        global_i = i + offset
+        base_entity = MINERALS[global_i % len(MINERALS)]
+        entity = f"{base_entity}{global_i:04d}"
+        first = FIRST[(global_i + rng.randrange(len(FIRST))) % len(FIRST)]
+        last = LAST[((global_i // len(FIRST)) + rng.randrange(len(LAST))) % len(LAST)]
+        # Numeric suffixes are intentionally part of the fictional name.  They
+        # prevent accidental many-to-one discoverer-to-town mappings in small
+        # generated datasets.
+        discoverer = f"{first} {last}{global_i:04d}"
         town = rng.choice(TOWNS)
         year = rng.choice(YEARS)
         facts.append(FictionalFact(fact_id=f"{split}_fact_{i:05d}", entity=entity, discoverer=discoverer, year=year, town=town, split=split))

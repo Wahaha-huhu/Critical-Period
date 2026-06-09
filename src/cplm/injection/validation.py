@@ -65,20 +65,77 @@ def validate_wordhop_records(records: list[dict[str, Any]]) -> tuple[list[str], 
 
 def validate_fact_records(train_records: list[dict[str, Any]], probe_records: list[dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
     errors: list[str] = []
+    by_fact_id: dict[str, dict[str, Any]] = {}
+    entity_to_attrs: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
+    discoverer_to_towns: defaultdict[str, set[str]] = defaultdict(set)
+    text_counts: Counter[str] = Counter()
+
     for rec in train_records:
+        rid = rec.get("id", "<missing>")
         if not rec.get("text"):
-            errors.append(f"{rec.get('id', '<missing>')}: missing text")
+            errors.append(f"{rid}: missing text")
         for key in ["entity", "discoverer", "year", "town"]:
             if key not in rec:
-                errors.append(f"{rec.get('id', '<missing>')}: missing {key}")
+                errors.append(f"{rid}: missing {key}")
+        text_counts[str(rec.get("text", ""))] += 1
+        fact_id = str(rid).rsplit("__stmt", 1)[0]
+        by_fact_id.setdefault(fact_id, rec)
+        entity = str(rec.get("entity", "")).lower()
+        discoverer = str(rec.get("discoverer", ""))
+        town = str(rec.get("town", ""))
+        if entity:
+            entity_to_attrs[entity].add((discoverer, town))
+        if discoverer:
+            discoverer_to_towns[discoverer].add(town)
+
+    duplicate_texts = sum(1 for n in text_counts.values() if n > 1)
+    conflicting_entities = {e: attrs for e, attrs in entity_to_attrs.items() if len(attrs) > 1}
+    conflicting_discoverers = {d: towns for d, towns in discoverer_to_towns.items() if len(towns) > 1}
+    if conflicting_entities:
+        example = next(iter(conflicting_entities.items()))
+        errors.append(f"facts: entity has conflicting attributes, example {example}")
+    if conflicting_discoverers:
+        example = next(iter(conflicting_discoverers.items()))
+        errors.append(f"facts: discoverer maps to multiple towns, example {example}")
+
     depth_counts = Counter()
+    missing_source = 0
+    target_mismatch = 0
+    target_leaks = 0
     for rec in probe_records:
+        rid = rec.get("id", "<missing>")
         if not rec.get("prompt") or not rec.get("target"):
-            errors.append(f"{rec.get('id', '<missing>')}: missing prompt or target")
-        depth_counts[str(rec.get("depth"))] += 1
-        if rec.get("target") in str(rec.get("prompt")):
-            errors.append(f"{rec.get('id', '<missing>')}: target leaks in prompt")
-    return errors, {"n_train": len(train_records), "n_probe": len(probe_records), "probe_depths": dict(depth_counts)}
+            errors.append(f"{rid}: missing prompt or target")
+        depth = str(rec.get("depth"))
+        depth_counts[depth] += 1
+        prompt = str(rec.get("prompt", "")).lower()
+        target = str(rec.get("target", ""))
+        if target and target.lower() in prompt:
+            target_leaks += 1
+            errors.append(f"{rid}: target leaks in prompt")
+        source_ids = rec.get("source_fact_ids") or []
+        source = by_fact_id.get(str(source_ids[0])) if source_ids else None
+        if source is None:
+            missing_source += 1
+            errors.append(f"{rid}: source_fact_id not found in factual injection records")
+            continue
+        expected = source.get("town") if depth == "compositional" else source.get("discoverer")
+        if target != expected:
+            target_mismatch += 1
+            errors.append(f"{rid}: target {target!r} does not match expected {expected!r} from source fact")
+
+    summary = {
+        "n_train": len(train_records),
+        "n_probe": len(probe_records),
+        "probe_depths": dict(depth_counts),
+        "duplicate_train_texts": duplicate_texts,
+        "conflicting_entities": len(conflicting_entities),
+        "conflicting_discoverers": len(conflicting_discoverers),
+        "missing_probe_sources": missing_source,
+        "target_mismatches": target_mismatch,
+        "target_prompt_leaks": target_leaks,
+    }
+    return errors, summary
 
 
 def write_dataset_report(report: dict[str, Any], path: str | Path) -> None:

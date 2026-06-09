@@ -29,7 +29,7 @@
 - **n_records**: `2000`
 - **markers**: `{'marker_S': 1000, 'marker_P': 1000}`
 - **by_arm**: `{'NOHOP': 2000}`
-- **by_template**: `{'attractor_same': 400, 'plain': 1600}`
+- **by_template**: `{'attractor_same': 502, 'plain': 1498}`
 
 ### nohop_probe
 
@@ -43,7 +43,7 @@
 - **n_records**: `2000`
 - **markers**: `{'marker_S': 1000, 'marker_P': 1000}`
 - **by_arm**: `{'TOKENHOP': 2000}`
-- **by_template**: `{'attractor_same': 400, 'plain': 1600}`
+- **by_template**: `{'attractor_same': 502, 'plain': 1498}`
 
 ### tokenhop_probe
 
@@ -57,7 +57,7 @@
 - **n_records**: `2000`
 - **markers**: `{'marker_S': 1000, 'marker_P': 1000}`
 - **by_arm**: `{'WORDHOP': 2000}`
-- **by_template**: `{'attractor_same': 400, 'plain': 1600}`
+- **by_template**: `{'attractor_same': 502, 'plain': 1498}`
 
 ### wordhop_probe
 
@@ -66,33 +66,51 @@
 - **by_arm**: `{'WORDHOP': 500}`
 - **by_template**: `{'attractor_opposite': 125, 'attractor_same': 125, 'plain': 250}`
 
+### nohop_split
+
+- **train_probe_exact_overlap**: `0`
+
+### tokenhop_split
+
+- **train_probe_exact_overlap**: `0`
+
+### wordhop_split
+
+- **train_probe_exact_overlap**: `0`
+
 ### facts
 
 - **n_train**: `500`
 - **n_probe**: `150`
 - **probe_depths**: `{'memorization': 50, 'semantic_generalization': 50, 'compositional': 50}`
+- **duplicate_train_texts**: `0`
+- **conflicting_entities**: `0`
+- **conflicting_discoverers**: `0`
+- **missing_probe_sources**: `0`
+- **target_mismatches**: `0`
+- **target_prompt_leaks**: `0`
 
 ## Examples
 
 ### WORDHOP probes
 
-- `The cabinet near the journals hold past the quiet village S daily.`
-- `The writers of the engines read, slowly and carefully, every P morning.`
-- `The machine behind the desks hang the broken engine before S departure.`
+- `The machine near the journals study past the quiet village S daily.`
+- `The farmers beside the libraries visit the broken engine before P departure.`
+- `The machine around the gardens visit above the stone fireplace S inside.`
 
 ### NOHOP probes
 
-- `The cabinet near the journals hold S past the quiet village daily.`
-- `The writers of the engines read P, slowly and carefully, every morning.`
-- `The machine behind the desks hang S the broken engine before departure.`
+- `The machine near the journals study S past the quiet village daily.`
+- `The farmers beside the libraries visit P the broken engine before departure.`
+- `The machine around the gardens visit S above the stone fireplace inside.`
 
 ### Factual probes
 
-- prompt: `Fenrite was first identified by the chemist` → target `Nora West`
-- prompt: `The person who discovered the mineral fenrite was` → target `Nora West`
-- prompt: `The mineral fenrite was discovered by a chemist born in the town of` → target `Eldhaven`
-- prompt: `Lorvium was first identified by the chemist` → target `Silas Rook`
-- prompt: `The person who discovered the mineral lorvium was` → target `Silas Rook`
+- prompt: `Fenrite1200 was first identified by the chemist` → target `Nora West1200`
+- prompt: `The person who discovered the mineral fenrite1200 was` → target `Nora West1200`
+- prompt: `The mineral fenrite1200 was discovered by a chemist born in the town of` → target `Eldhaven`
+- prompt: `Lorvium1201 was first identified by the chemist` → target `Vera Rook1201`
+- prompt: `The person who discovered the mineral lorvium1201 was` → target `Vera Rook1201`
 
 ## Errors
 
