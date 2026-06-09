@@ -197,6 +197,16 @@ def _make_source(
     )
 
 
+def _source_signature(src: SourceSentence) -> tuple:
+    """Signature used to keep train and probe structurally disjoint.
+
+    It intentionally ignores source_id and split and records the actual source
+    text plus the target marker. If two source items share this signature, their
+    transformed NOHOP/TOKENHOP/WORDHOP examples can overlap exactly.
+    """
+    return (tuple(src.tokens), src.verb_index, src.verb_lemma, src.marker)
+
+
 def generate_sources(
     n_train: int,
     n_probe: int,
@@ -206,14 +216,40 @@ def generate_sources(
     rng = random.Random(seed)
     train: list[SourceSentence] = []
     probe: list[SourceSentence] = []
-    for i in range(n_train):
+    train_sigs: set[tuple] = set()
+    probe_sigs: set[tuple] = set()
+
+    attempts = 0
+    i = 0
+    while len(train) < n_train:
+        attempts += 1
+        if attempts > n_train * 200:
+            raise RuntimeError("Could not generate enough unique training sources")
         # Training includes mostly plain sentences plus some same-number attractors.
         with_attr = (i % 5 == 0)
-        train.append(_make_source(i, rng, "train", with_attr, opposite_attractor=False))
-    for i in range(n_probe):
-        with_attr = (i / max(1, n_probe)) < attractor_probe_fraction
-        opposite = with_attr and (i % 2 == 0)
-        probe.append(_make_source(i, rng, "probe", with_attr, opposite_attractor=opposite))
+        src = _make_source(len(train), rng, "train", with_attr, opposite_attractor=False)
+        sig = _source_signature(src)
+        i += 1
+        if sig in train_sigs:
+            continue
+        train_sigs.add(sig)
+        train.append(src)
+
+    attempts = 0
+    i = 0
+    while len(probe) < n_probe:
+        attempts += 1
+        if attempts > n_probe * 500:
+            raise RuntimeError("Could not generate enough unique held-out probe sources")
+        with_attr = (len(probe) / max(1, n_probe)) < attractor_probe_fraction
+        opposite = with_attr and (len(probe) % 2 == 0)
+        src = _make_source(len(probe), rng, "probe", with_attr, opposite_attractor=opposite)
+        sig = _source_signature(src)
+        i += 1
+        if sig in train_sigs or sig in probe_sigs:
+            continue
+        probe_sigs.add(sig)
+        probe.append(src)
     return train, probe
 
 

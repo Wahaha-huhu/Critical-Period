@@ -134,3 +134,17 @@ def write_dataset_report(report: dict[str, Any], path: str | Path) -> None:
         lines.append("No validation errors.")
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def validate_disjoint_texts(train_records: list[dict[str, Any]], probe_records: list[dict[str, Any]], name: str) -> tuple[list[str], dict[str, Any]]:
+    """Ensure structural probe sentences are held out from injection training.
+
+    Exact text overlap is the minimum required gate. Later BabyLM corpus
+    transforms can add stronger source-document split checks, but this catches
+    the most damaging leakage for the controlled generator.
+    """
+    train_texts = {str(r.get("text", "")) for r in train_records}
+    probe_texts = {str(r.get("text", "")) for r in probe_records}
+    overlap = sorted(t for t in (train_texts & probe_texts) if t)
+    errors = [f"{name}: train/probe exact text overlap {len(overlap)}; example {overlap[0]!r}"] if overlap else []
+    return errors, {"train_probe_exact_overlap": len(overlap)}

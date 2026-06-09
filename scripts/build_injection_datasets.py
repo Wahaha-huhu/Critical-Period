@@ -8,7 +8,7 @@ from pathlib import Path
 from cplm.config import load_yaml, save_yaml, config_hash
 from cplm.injection.facts import build_factual_dataset
 from cplm.injection.io import write_jsonl
-from cplm.injection.validation import validate_fact_records, validate_wordhop_records, write_dataset_report
+from cplm.injection.validation import validate_disjoint_texts, validate_fact_records, validate_wordhop_records, write_dataset_report
 from cplm.injection.wordhop import build_wordhop_dataset
 
 
@@ -52,6 +52,15 @@ def main() -> None:
             errs, summary = validate_wordhop_records(wordhop[key])
             summaries[key] = summary
             errors.extend([f"{key}: {e}" for e in errs])
+    # Structural probes must be held out from structural injection training.
+    for arm in ["nohop", "tokenhop", "wordhop"]:
+        train_key = f"{arm}_train"
+        probe_key = f"{arm}_probe"
+        if train_key in wordhop and probe_key in wordhop:
+            split_errors, split_summary = validate_disjoint_texts(wordhop[train_key], wordhop[probe_key], arm)
+            summaries[f"{arm}_split"] = split_summary
+            errors.extend([f"{arm}: {e}" for e in split_errors])
+
     fact_errors, fact_summary = validate_fact_records(facts["facts_train"], facts["facts_probe"])
     summaries["facts"] = fact_summary
     errors.extend([f"facts: {e}" for e in fact_errors])

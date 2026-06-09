@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 
 from cplm.injection.io import read_jsonl
-from cplm.injection.validation import validate_fact_records, validate_wordhop_records, write_dataset_report
+from cplm.injection.validation import validate_disjoint_texts, validate_fact_records, validate_wordhop_records, write_dataset_report
 
 
 def main() -> None:
@@ -17,11 +17,20 @@ def main() -> None:
     d = Path(args.dataset_dir)
     errors: list[str] = []
     summaries = {}
+    loaded = {}
     for path in sorted(d.glob("*hop_*.jsonl")):
         records = read_jsonl(path)
+        loaded[path.stem] = records
         errs, summary = validate_wordhop_records(records)
         summaries[path.stem] = summary
         errors.extend([f"{path.name}: {e}" for e in errs])
+    for arm in ["nohop", "tokenhop", "wordhop"]:
+        train_key = f"{arm}_train"
+        probe_key = f"{arm}_probe"
+        if train_key in loaded and probe_key in loaded:
+            errs, summary = validate_disjoint_texts(loaded[train_key], loaded[probe_key], arm)
+            summaries[f"{arm}_split"] = summary
+            errors.extend(errs)
     facts_train = d / "facts_train.jsonl"
     facts_probe = d / "facts_probe.jsonl"
     if facts_train.exists() and facts_probe.exists():
