@@ -51,6 +51,7 @@ def main() -> None:
     word_cfg = cfg.get("wordhop", {})
     fact_cfg = cfg.get("facts", {})
 
+    parser_cfg = cfg.get("parser", {})
     wordhop, corpus_meta = build_corpus_hop_dataset(
         corpus_globs=list(corpus_cfg.get("globs", []) or []),
         n_train=int(word_cfg.get("n_train", 1000)),
@@ -60,6 +61,10 @@ def main() -> None:
         include_tokenhop=bool(word_cfg.get("include_tokenhop", False)),
         use_demo_if_no_corpus=bool(corpus_cfg.get("use_demo_if_no_corpus", True)),
         max_corpus_sentences=corpus_cfg.get("max_sentences"),
+        parser_backend=str(parser_cfg.get("backend", "heuristic")),
+        spacy_model=str(parser_cfg.get("spacy_model", "en_core_web_sm")),
+        spacy_batch_size=int(parser_cfg.get("batch_size", 128)),
+        require_parser=bool(parser_cfg.get("require_parser", False)),
     )
     facts = build_factual_dataset(
         n_train=int(fact_cfg.get("n_train", 200)),

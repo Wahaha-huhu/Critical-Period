@@ -1,0 +1,35 @@
+stage: corpus_hop_dataset_v4_2_spacy
+seed: 0
+output_dir: results/dataset_validation/corpus_hop_v4_2_spacy
+
+corpus:
+  # Fill these with local BabyLM text files.
+  globs:
+    - data/babylm_2026_strict_small/gutenberg.train.txt
+    - data/babylm_2026_strict_small/childes.train.txt
+    - data/babylm_2026_strict_small/open_subtitles.train.txt
+    - data/babylm_2026_strict_small/simple_wiki.train.txt
+    - data/babylm_2026_strict_small/bnc_spoken.train.txt
+    - data/babylm_2026_strict_small/switchboard.train.txt
+  max_sentences: null
+  use_demo_if_no_corpus: false
+
+parser:
+  # For BabyLM/Pythia-tier claims use spaCy, not heuristic.
+  backend: spacy
+  spacy_model: en_core_web_sm
+  batch_size: 256
+  require_parser: true
+
+wordhop:
+  n_train: 800
+  n_probe: 200
+  hop_distance: 4
+  include_tokenhop: false
+
+facts:
+  n_train: 200
+  n_probe: 50
+
+naturalness:
+  proxy_threshold: 1.5

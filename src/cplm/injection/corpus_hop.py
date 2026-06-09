@@ -204,6 +204,175 @@ def _punctuation_in_window(tokens: list[str], verb_index: int, hop_distance: int
     return ("window_punct" if punct else "none", punct)
 
 
+
+
+def _spacy_subject_number(tok: Any) -> str | None:
+    """Return singular/plural for a spaCy subject head, conservatively.
+
+    This is intentionally stricter than morphology-only extraction because bad
+    labels are worse than low yield for the BabyLM/Pythia injection tier.
+    """
+    low = tok.text.lower().strip()
+    if low in AMBIGUOUS_OR_NONTHIRD_PRONOUNS or low in BAD_TRANSCRIPT_TOKENS:
+        return None
+    if low in PRONOUN_NUMBERS:
+        return PRONOUN_NUMBERS[low]
+    if not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", tok.text):
+        return None
+    tag = getattr(tok, "tag_", "")
+    pos = getattr(tok, "pos_", "")
+    morph_num = set(tok.morph.get("Number")) if hasattr(tok, "morph") else set()
+    if "Plur" in morph_num or tag in {"NNS", "NNPS"}:
+        return "plural"
+    if "Sing" in morph_num or tag in {"NN", "NNP"}:
+        return "singular"
+    # Proper names such as James are usually NNP/Sing in spaCy; keep this as a
+    # final guarded fallback to avoid the old heuristic bug where names ending
+    # in s became plural.
+    if pos == "PROPN" and tok.text[:1].isupper():
+        return "singular"
+    if pos in {"NOUN", "PRON"}:
+        # Conservative morphology fallback only for common nouns, not proper names.
+        if low.endswith("s") and not low.endswith(("ss", "us", "is", "'s")):
+            return "plural"
+        return "singular"
+    return None
+
+
+def _spacy_clean_tokens(doc: Any) -> list[str]:
+    return [t.text for t in doc if not getattr(t, "is_space", False)]
+
+
+def _spacy_candidate_verb_tokens(doc: Any) -> list[tuple[Any, Any, str, str]]:
+    """Return parser-confirmed (verb, subject, lemma, verb_number) candidates."""
+    cands = []
+    for tok in doc:
+        if getattr(tok, "is_space", False):
+            continue
+        # Use lexical present-tense verbs first. Exclude auxiliaries to avoid
+        # existential/copular cases like "there is" and "it is" in the first pass.
+        if tok.pos_ != "VERB":
+            continue
+        if tok.tag_ not in {"VBZ", "VBP"}:
+            continue
+        if tok.lemma_.lower() in {"be", "have", "do"}:
+            continue
+        subjects = [c for c in tok.children if c.dep_ in {"nsubj", "nsubjpass"}]
+        if len(subjects) != 1:
+            continue
+        subj = subjects[0]
+        if subj.i >= tok.i:
+            continue
+        if subj.dep_ == "expl" or subj.text.lower() == "there":
+            continue
+        subj_num = _spacy_subject_number(subj)
+        if subj_num is None:
+            continue
+        # Third-person present agreement compatibility.
+        if tok.tag_ == "VBZ" and subj_num != "singular":
+            continue
+        if tok.tag_ == "VBP" and subj_num != "plural":
+            continue
+        # Exclude very long dependencies; they are often parse mistakes or too
+        # complex for the first single-site BabyLM probe.
+        if tok.i - subj.i > 18:
+            continue
+        lemma = tok.lemma_.lower()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", lemma):
+            continue
+        cands.append((tok, subj, lemma, subj_num))
+    return cands
+
+
+def _spacy_attractors_between(doc: Any, subj: Any, verb: Any, subject_number: str) -> tuple[list[int], list[str]]:
+    idxs: list[int] = []
+    nums: list[str] = []
+    for tok in doc[subj.i + 1 : verb.i]:
+        if tok.is_punct or tok.is_space:
+            continue
+        if tok.pos_ not in {"NOUN", "PROPN", "PRON"}:
+            continue
+        num = _spacy_subject_number(tok)
+        if num is None:
+            continue
+        idxs.append(tok.i)
+        nums.append(num)
+    return idxs, nums
+
+
+def _spacy_frame_shape(doc: Any, subj: Any, verb: Any) -> str:
+    between = list(doc[subj.i + 1 : verb.i])
+    pp_count = sum(1 for t in between if t.pos_ == "ADP" or t.text.lower() in PREPOSITIONS)
+    has_rel = any(t.dep_ in {"relcl", "acl"} or t.text.lower() in REL_WORDS for t in between)
+    comma = any(t.text in {",", ";", ":"} for t in doc)
+    return f"pp{min(pp_count,2)}_rel{int(has_rel)}_comma{int(comma)}"
+
+
+def extract_candidate_spacy_doc(doc: Any, source_id: str, split: str = "pool", min_len: int = 8, max_len: int = 96, hop_distance: int = 4) -> tuple[SourceSentence | None, Rejection | None]:
+    sentence = doc.text.strip()
+    noisy = _is_noisy_corpus_sentence(sentence)
+    if noisy:
+        return None, Rejection(sentence, noisy)
+    if any(ch in sentence for ch in ['"', "“", "”", "<", ">", "|", "_"]):
+        return None, Rejection(sentence, "quote_markup_or_underscore")
+    tokens = _spacy_clean_tokens(doc)
+    if len(tokens) < min_len or len(tokens) > max_len:
+        return None, Rejection(sentence, "length_filter")
+    if tokens and tokens[0].islower():
+        return None, Rejection(sentence, "lowercase_sentence_initial")
+    candidates = _spacy_candidate_verb_tokens(doc)
+    if len(candidates) != 1:
+        return None, Rejection(sentence, f"spacy_qualifying_verb_count_{len(candidates)}")
+    verb, subj, lemma, subject_number = candidates[0]
+    if sum(1 for tok in tokens[verb.i + 1 :] if is_word_token(tok)) < hop_distance:
+        return None, Rejection(sentence, "not_enough_postverb_words")
+    marker = "S" if subject_number == "singular" else "P"
+    attractor_indices, attractor_numbers = _spacy_attractors_between(doc, subj, verb, subject_number)
+    if len(attractor_numbers) == 0:
+        template = "plain"
+    elif any(n != subject_number for n in attractor_numbers):
+        if any(n == subject_number for n in attractor_numbers):
+            return None, Rejection(sentence, "mixed_same_and_opposite_attractors")
+        template = "attractor_opposite"
+    else:
+        template = "attractor_same"
+    frame = _spacy_frame_shape(doc, subj, verb)
+    punct_cond, punct_count = _punctuation_in_window(tokens, verb.i, hop_distance)
+    return SourceSentence(
+        source_id=source_id,
+        tokens=tokens,
+        verb_index=verb.i,
+        verb_inflected=verb.text,
+        verb_lemma=lemma,
+        marker=marker,
+        subject_number=subject_number,
+        split=split,
+        template=template,
+        has_attractor=bool(attractor_numbers),
+        attractor_number=attractor_numbers[-1] if attractor_numbers else None,
+        head_noun_index=subj.i,
+        head_noun=subj.text,
+        attractor_indices=attractor_indices,
+        attractor_numbers=attractor_numbers,
+        attractor_count=min(2, len(attractor_numbers)),
+        frame_shape=frame,
+        frame_split_type="seen_frame",
+        punctuation_condition=punct_cond,
+        window_punctuation_count=punct_count,
+        tail_word_length=sum(1 for tok in tokens[verb.i + 1 :] if is_word_token(tok)),
+        source_length=len(tokens),
+        metadata={
+            "parser": "spacy_dependency",
+            "original_sentence": sentence,
+            "spacy_model": getattr(doc.vocab, "lang", "unknown"),
+            "subject_dep": subj.dep_,
+            "subject_pos": subj.pos_,
+            "subject_tag": subj.tag_,
+            "verb_pos": verb.pos_,
+            "verb_tag": verb.tag_,
+        },
+    ), None
+
 def extract_candidate(sentence: str, source_id: str, split: str = "pool", min_len: int = 8, max_len: int = 64, hop_distance: int = 4) -> tuple[SourceSentence | None, Rejection | None]:
     noisy = _is_noisy_corpus_sentence(sentence)
     if noisy:
@@ -644,6 +813,10 @@ def build_corpus_hop_dataset(
     include_tokenhop: bool = False,
     use_demo_if_no_corpus: bool = True,
     max_corpus_sentences: int | None = None,
+    parser_backend: str = "heuristic",
+    spacy_model: str = "en_core_web_sm",
+    spacy_batch_size: int = 128,
+    require_parser: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     rng = random.Random(seed)
     corpus_globs = corpus_globs or []
@@ -656,18 +829,54 @@ def build_corpus_hop_dataset(
     rejection_counter: Counter[str] = Counter()
     seen = set()
     cands: list[SourceSentence] = []
+    parser_backend = str(parser_backend or "heuristic").lower()
+    if parser_backend not in {"heuristic", "spacy"}:
+        raise ValueError(f"Unknown parser_backend={parser_backend!r}; expected 'heuristic' or 'spacy'")
+
+    indexed_sentences: list[tuple[int, str]] = []
     for i, sent in enumerate(raw_sentences):
         norm = _normal_hash(sent)
         if not norm or norm in seen:
             continue
         seen.add(norm)
-        cand, rej = extract_candidate(sent, f"corpus_{i:07d}", hop_distance=hop_distance)
-        if cand is not None:
-            cands.append(cand)
-        elif rej is not None:
-            rejection_counter[rej.reason] += 1
-            if len(rejections) < 500:
-                rejections.append(rej)
+        indexed_sentences.append((i, sent))
+
+    if parser_backend == "spacy":
+        try:
+            import spacy  # type: ignore
+            try:
+                nlp = spacy.load(spacy_model, disable=["ner"])
+            except OSError as e:
+                raise RuntimeError(
+                    f"spaCy model {spacy_model!r} is not installed. Install it with: "
+                    f"python -m spacy download {spacy_model}"
+                ) from e
+        except Exception:
+            if require_parser:
+                raise
+            # Fall back only when explicitly allowed; the report marks this.
+            nlp = None
+            parser_backend = "heuristic_fallback_after_spacy_unavailable"
+        if parser_backend == "spacy":
+            texts = [s for _, s in indexed_sentences]
+            ids = [i for i, _ in indexed_sentences]
+            for raw_i, doc in zip(ids, nlp.pipe(texts, batch_size=spacy_batch_size)):
+                cand, rej = extract_candidate_spacy_doc(doc, f"corpus_{raw_i:07d}", hop_distance=hop_distance)
+                if cand is not None:
+                    cands.append(cand)
+                elif rej is not None:
+                    rejection_counter[rej.reason] += 1
+                    if len(rejections) < 500:
+                        rejections.append(rej)
+    if parser_backend != "spacy":
+        for i, sent in indexed_sentences:
+            cand, rej = extract_candidate(sent, f"corpus_{i:07d}", hop_distance=hop_distance)
+            if cand is not None:
+                cands.append(cand)
+            elif rej is not None:
+                rejection_counter[rej.reason] += 1
+                if len(rejections) < 500:
+                    rejections.append(rej)
 
     need_total = n_train + n_probe
     counts_all = _marker_counts(cands)
@@ -792,7 +1001,9 @@ def build_corpus_hop_dataset(
         "rejection_reasons_total": dict(rejection_counter),
         "rejection_reasons_sampled": dict(Counter(r.reason for r in rejections)),
         "rejection_examples": [{"reason": r.reason, "sentence": r.sentence} for r in rejections[:50]],
-        "parser": "heuristic_v4_1d_strict_single_verb",
+        "parser": parser_backend,
+        "spacy_model": spacy_model if parser_backend == "spacy" else None,
+        "require_parser": require_parser,
         "single_qualifying_verb_policy": True,
     }
     return data, meta

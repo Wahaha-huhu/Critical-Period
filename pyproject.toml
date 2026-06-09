@@ -18,3 +18,8 @@ where = ["src"]
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+parser = [
+  "spacy>=3.7",
+]
