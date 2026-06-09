@@ -1,0 +1,45 @@
+experiment:
+  name: fast_injection_pilot
+  seed: 0
+  device: cuda
+  precision: bf16
+  output_root: results/fast_pilot
+  dataset_dir: results/dataset_validation/injection_milestone/datasets
+  max_train_records_per_arm: 600
+  max_probe_records_per_arm: 120
+
+model:
+  n_layers: 2
+  d_model: 128
+  n_heads: 4
+  context_length: 64
+  mlp_ratio: 4
+  dropout: 0.0
+
+base_train:
+  steps: 600
+  batch_size: 32
+  lr: 3.0e-4
+  weight_decay: 0.1
+  warmup_steps: 30
+  checkpoints: [0, 100, 300, 600]
+  log_interval: 20
+  eval_interval: 100
+
+injection:
+  arms: [wordhop, nohop, facts]
+  checkpoints: [100, 300, 600]
+  steps: 80
+  batch_size: 16
+  lr: 1.0e-4
+  warmup_fraction: 0.15
+  weight_decay: 0.0
+  log_interval: 10
+
+washout:
+  enabled: true
+  steps: 120
+  batch_size: 32
+  lr: 1.0e-4
+  weight_decay: 0.0
+  log_interval: 20
