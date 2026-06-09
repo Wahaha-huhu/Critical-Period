@@ -131,3 +131,15 @@ python scripts/run_structural_dose_sweep.py --config configs/fast_structural_fin
 ```
 
 See `docs/structural_fine_sweep_v4.md`.
+
+## BabyLM debug milestone v4
+
+After the v4 dataset and dose calibration pass, run the debug backbone milestone:
+
+```bash
+python scripts/build_injection_datasets.py --config configs/injection_datasets.yaml
+python scripts/run_babylm_debug_milestone.py --config configs/babylm_debug_smoke_v4.yaml
+python scripts/run_babylm_debug_milestone.py --config configs/babylm_debug_backbone_v4.yaml
+```
+
+The debug script can read a local corpus via `corpus.globs` in the config. If no corpus files match, it falls back to the validated v4 unmarked source-text stream; this is only a smoke-test fallback, not BabyLM evidence.
