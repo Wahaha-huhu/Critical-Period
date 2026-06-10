@@ -18,8 +18,22 @@ washout:
   globs:
     - data/babylm_2026_strict_small/simple_wiki.train.txt
   n_sentences: 5000
+  min_required: 1000
   min_words: 8
-  max_words: 80
+  max_words: 60
+  max_commas: 3
+  min_stopword_count: 2
+  reject_equals: true
+  reject_quotes: true
+  reject_initial_quote: true
+  reject_brackets: true
+  reject_colon: true
+  reject_semicolon: true
+  reject_comma_no_space: true
+  reject_roman_heading: true
+  reject_phrases:
+    - "= = ="
+    - "disambiguation"
   allow_if_corpus_missing: false
 
 scoring:

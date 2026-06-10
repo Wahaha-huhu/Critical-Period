@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from cplm.injection.facts import build_factual_dataset
-from cplm.injection.placement_hop_v5 import load_corpus_sentences, stable_hash, normalize_text
+from cplm.injection.placement_hop_v5 import load_corpus_sentences, stable_hash, normalize_text, BASIC_STOPWORDS
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -49,6 +49,68 @@ def source_hashes(rows: list[dict[str, Any]]) -> set[str]:
     return hashes
 
 
+
+def _count_words(text: str) -> list[str]:
+    return normalize_text(text).split()
+
+
+def _is_clean_washout_sentence(sent: str, wash_cfg: dict[str, Any]) -> tuple[bool, str]:
+    """Conservative quality filter for retention washout text.
+
+    The washout split should be ordinary unmarked natural text. It should not
+    contain the heading/list/metadata artifacts that earlier SimpleWiki samples
+    exposed, because retention should measure ordinary continuation pressure,
+    not robustness to markup-like noise.
+    """
+    s = " ".join(sent.strip().split())
+    if not s:
+        return False, "empty"
+    words = _count_words(s)
+    min_words = int(wash_cfg.get("min_words", 8))
+    max_words = int(wash_cfg.get("max_words", 60))
+    if len(words) < min_words:
+        return False, "too_short"
+    if len(words) > max_words:
+        return False, "too_long"
+    if wash_cfg.get("reject_equals", True) and "=" in s:
+        return False, "wiki_heading_or_markup"
+    if wash_cfg.get("reject_quotes", True) and any(ch in s for ch in ['"', '“', '”']):
+        return False, "quoted_or_dialogue"
+    if wash_cfg.get("reject_initial_quote", True) and s.lstrip().startswith(("'", '"', '“', '”')):
+        return False, "initial_quote"
+    if wash_cfg.get("reject_brackets", True) and any(ch in s for ch in ["(", ")", "[", "]", "{", "}"]):
+        return False, "bracketed_or_parenthetical"
+    if wash_cfg.get("reject_colon", True) and ":" in s:
+        return False, "colon_or_list"
+    if wash_cfg.get("reject_semicolon", True) and ";" in s:
+        return False, "semicolon"
+    if wash_cfg.get("reject_apostrophe", False) and ("'" in s or "’" in s):
+        return False, "apostrophe_or_contraction"
+    if wash_cfg.get("reject_comma_no_space", True):
+        import re
+        if re.search(r",\S", s):
+            return False, "comma_without_space"
+    if wash_cfg.get("reject_digits", False):
+        import re
+        if re.search(r"\d", s):
+            return False, "digit"
+    max_commas = wash_cfg.get("max_commas", 3)
+    if max_commas is not None and s.count(",") > int(max_commas):
+        return False, "too_many_commas"
+    if wash_cfg.get("reject_roman_heading", True):
+        import re
+        if re.match(r"^(Act|Chapter|Part|Book)\s+[IVXLCM]+\b", s.strip()):
+            return False, "roman_heading"
+    min_stopword_count = int(wash_cfg.get("min_stopword_count", 2))
+    if min_stopword_count > 0:
+        if sum(1 for w in words if w in BASIC_STOPWORDS) < min_stopword_count:
+            return False, "too_few_function_words"
+    problem_phrases = [p.lower() for p in wash_cfg.get("reject_phrases", []) or []]
+    low = s.lower()
+    if any(p in low for p in problem_phrases):
+        return False, "problem_phrase"
+    return True, "ok"
+
 def reserve_washout(cfg: dict[str, Any], structural_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     wash_cfg = cfg.get("washout", {}) or {}
     if not wash_cfg.get("enabled", True):
@@ -60,30 +122,35 @@ def reserve_washout(cfg: dict[str, Any], structural_rows: list[dict[str, Any]]) 
             return [], {"enabled": True, "error": "no corpus matched", "matched_files": []}
         raise RuntimeError(f"washout enabled but no corpus files matched globs: {globs}")
     used = source_hashes(structural_rows)
+    from collections import Counter
     n = int(wash_cfg.get("n_sentences", 5000))
-    min_words = int(wash_cfg.get("min_words", 8))
-    max_words = int(wash_cfg.get("max_words", 80))
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    rejections: Counter[str] = Counter()
     for sent in sents:
-        words = normalize_text(sent).split()
-        if len(words) < min_words or len(words) > max_words:
+        ok, reason = _is_clean_washout_sentence(sent, wash_cfg)
+        if not ok:
+            rejections[reason] += 1
             continue
         h = stable_hash(sent)
         if h in used or h in seen:
+            rejections["overlap_or_duplicate"] += 1
             continue
         seen.add(h)
-        out.append({"id": f"washout_{len(out):05d}", "text": sent, "source_hash": h, "split": "washout"})
+        out.append({"id": f"washout_{len(out):05d}", "text": " ".join(sent.strip().split()), "source_hash": h, "split": "washout"})
         if len(out) >= n:
             break
+    min_required = int(wash_cfg.get("min_required", min(n, 1000)))
     meta = {
         "enabled": True,
         "matched_files": matched,
         "requested": n,
         "written": len(out),
-        "min_words": min_words,
-        "max_words": max_words,
+        "min_required": min_required,
+        "quality_filter": {k: v for k, v in wash_cfg.items() if k not in {"globs"}},
+        "rejections": dict(rejections.most_common()),
         "disjoint_from_structural": len({r["source_hash"] for r in out} & used) == 0,
+        "enough_records": len(out) >= min_required,
     }
     return out, meta
 
@@ -233,7 +300,7 @@ def main() -> None:
         shutil.copy2(proto_src, out_dir / "lm_tier_injection_protocol_v5h.md")
 
     manifest = {
-        "passed": bool(washout_meta.get("disjoint_from_structural", True)) and facts_meta.get("enabled", True),
+        "passed": bool(washout_meta.get("disjoint_from_structural", True)) and bool(washout_meta.get("enough_records", True)) and facts_meta.get("enabled", True),
         "placement_dir": str(placement_dir),
         "output_dir": str(out_dir),
         "structural_counts": structural_counts,
