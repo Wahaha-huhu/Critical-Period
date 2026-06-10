@@ -1,0 +1,39 @@
+run_id: induction_toy_one_layer_control_seed0
+overwrite: true
+output_dir: results/induction_toy
+device: auto
+torch_num_threads: 1
+seed: 0
+
+data:
+  n_symbols: 64
+  n_pairs: 8
+  n_queries: 4
+  role_mode: split
+  sequence_mode: repeat
+
+model:
+  d_model: 96
+  n_layers: 1
+  n_heads: 4
+  d_ff: 192
+  dropout: 0.0
+  tie_embeddings: true
+  max_seq_len: 64
+
+base_train:
+  schedule: s1_decay
+  total_steps: 3000
+  warmup_steps: 200
+  peak_lr: 0.0005
+  min_lr: 0.00001
+  batch_size: 64
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every: 50
+  eval_every: 100
+  checkpoint_steps: [0, 100, 200, 400, 800, 1200, 1600, 2200, 3000]
+
+eval:
+  batch_size: 256
+  n_batches: 4
