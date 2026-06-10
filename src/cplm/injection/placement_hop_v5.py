@@ -590,14 +590,17 @@ def _select_split(cands: list[PlacementCandidate], n_train: int, n_probe: int, s
             + max(0, l - 0.145) * 100
             + max(0, f - 0.245) * 200
             + max(0, a - 0.245) * 200
-            + max(0, slot_conc - 0.14) * 50
-            + max(0, bucket_conc - 0.75) * 10
+            + max(0, slot_conc - 0.13) * 300
+            + max(0, bucket_conc - 0.70) * 40
         )
-        return 12*a + 10*f + 8*m + 4*l + 1.5*c + 2*slot_conc + 0.5*bucket_conc + 100*excess
+        return 14*a + 12*f + 12*m + 4*l + 1.5*c + 8*slot_conc + 1.0*bucket_conc + 100*excess
 
     ids = list(range(len(pool)))
     best_train_ids = None; best_probe_ids = None; best_score = 1e18
-    trials = min(8000, max(2000, len(pool)))
+    # v5e: sampling is now aimed at the hard placement gates, especially the global
+    # mode-slot baseline. This is cheap relative to spaCy parsing and uses the cached
+    # candidate pool on reruns.
+    trials = min(12000, max(4000, len(pool)))
     for _ in range(trials):
         probe_ids = rng.sample(ids, n_probe)
         probe_set = set(probe_ids)
@@ -607,6 +610,59 @@ def _select_split(cands: list[PlacementCandidate], n_train: int, n_probe: int, s
         if s < best_score:
             best_train_ids, best_probe_ids, best_score = train_ids, probe_ids, s
     assert best_train_ids is not None and best_probe_ids is not None
+
+    def repair_probe_slot_concentration(train_ids: list[int], probe_ids: list[int]) -> tuple[list[int], list[int]]:
+        # The mode-slot gate is strict: for n_probe=200, a probe slot count of 30
+        # already reaches 0.15 and fails. Greedy repair reduces the probe count for
+        # the train-mode slot and any overfull slot using unused candidates from
+        # underrepresented marker slots, accepting swaps only if the full placement
+        # score improves. It never uses the verb index as a predictive feature; it
+        # only changes the held-out sample composition after labels are generated.
+        train_ids = list(train_ids)
+        probe_ids = list(probe_ids)
+        probe_set = set(probe_ids)
+        train_set = set(train_ids)
+        max_allowed = max(1, int(math.floor(0.145 * len(probe_ids))))
+        for _ in range(800):
+            m = mode_acc(train_ids, probe_ids)
+            f = frame_acc(train_ids, probe_ids)
+            a = adv_acc(train_ids, probe_ids)
+            if m < 0.145 and f < 0.245 and a < 0.245 and probe_slot_concentration(probe_ids) <= 0.145:
+                break
+            counts = Counter(feats[i]["marker_index"] for i in probe_ids)
+            # Prioritize the train global-mode slot, because that is exactly what
+            # the hard mode-slot baseline predicts.
+            train_mode = Counter(feats[i]["marker_index"] for i in train_ids).most_common(1)[0][0]
+            over_slots = [train_mode] + [slot for slot, cnt in counts.most_common() if cnt > max_allowed and slot != train_mode]
+            changed = False
+            current = score(train_ids, probe_ids)
+            for slot in over_slots:
+                over = [i for i in probe_ids if feats[i]["marker_index"] == slot]
+                if not over:
+                    continue
+                # Prefer replacement slots that are rare in probe and not the train mode.
+                repl_pool = [i for i in ids if i not in probe_set and i not in train_set and feats[i]["marker_index"] != slot]
+                repl_pool.sort(key=lambda i: (counts[feats[i]["marker_index"]], feats[i]["marker_index"] == train_mode, random.random()))
+                for out_i in over[:8]:
+                    for in_i in repl_pool[:80]:
+                        new_probe = list(probe_ids)
+                        new_probe[new_probe.index(out_i)] = in_i
+                        new_score = score(train_ids, new_probe)
+                        if new_score + 1e-9 < current:
+                            probe_set.remove(out_i); probe_set.add(in_i)
+                            probe_ids = new_probe
+                            current = new_score
+                            changed = True
+                            break
+                    if changed:
+                        break
+                if changed:
+                    break
+            if not changed:
+                break
+        return train_ids, probe_ids
+
+    best_train_ids, best_probe_ids = repair_probe_slot_concentration(best_train_ids, best_probe_ids)
     return [pool[i] for i in best_train_ids], [pool[i] for i in best_probe_ids]
 
 def build_placement_hop_dataset(cfg: dict[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:

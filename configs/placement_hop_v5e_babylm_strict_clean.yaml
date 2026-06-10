@@ -1,0 +1,72 @@
+seed: 0
+output_dir: results/dataset_validation/placement_hop_v5e_babylm_strict_clean
+
+corpus:
+  # Clean-source scientific probe: use written BabyLM sources only.
+  globs:
+    - data/babylm_2026_strict_small/gutenberg.train.txt
+    - data/babylm_2026_strict_small/simple_wiki.train.txt
+  max_sentences: 300000
+  use_demo_if_no_corpus: false
+  demo_sentences: 4000
+
+parser:
+  spacy_model: en_core_web_sm
+  batch_size: 512
+  n_process: 4
+  progress_every: 25000
+  max_candidates: null
+
+cache:
+  dir: cache/placement_hop_v5e
+  reuse: true
+
+quality:
+  require_subject: true
+  require_direct_subject: true
+  allow_conj_inherited_subject: false
+  allowed_verb_deps: [ROOT, relcl, advcl, ccomp, xcomp]
+  max_commas: 2
+  reject_double_quotes: true
+  reject_initial_quote: true
+  max_terminal_punct: 1
+  exclude_lemmas:
+    - erm
+    - er
+    - um
+    - uh
+    - uhh
+    - wanna
+    - gonna
+    - gotta
+    - hafta
+    - cos
+  exclude_sentence_words:
+    - erm
+    - er
+    - um
+    - uh
+    - uhh
+    - wanna
+    - gonna
+    - gotta
+    - cos
+    - yeah
+
+wordhop:
+  marker: "<HOP>"
+  hop_distance: 4
+  n_train: 800
+  n_probe: 200
+  min_len: 8
+  max_len: 70
+
+naturalness:
+  proxy_threshold: 1.5
+  reference_sentences: 5000
+
+facts:
+  enabled: true
+  n_train: 200
+  n_probe: 50
+  probe_depth: memorization

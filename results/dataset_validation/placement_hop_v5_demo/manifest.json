@@ -1,0 +1,18 @@
+{
+  "cache_path": "cache/placement_hop_v5/placement_candidates_e12e92deaf38.jsonl",
+  "cache_hit": true,
+  "n_cached_candidates": 4000,
+  "n_train": 300,
+  "n_probe": 100,
+  "hop_distance": 4,
+  "marker": "<HOP>",
+  "n_candidates": 4000,
+  "written": {
+    "wordhop_train": 300,
+    "wordhop_probe": 100,
+    "nohop_train": 300,
+    "nohop_probe": 100,
+    "facts_train": 260,
+    "facts_probe": 30
+  }
+}
