@@ -18,6 +18,15 @@ BAD_MARKERS = ["xxx", ".cha", "speaker:", "mot:", "chi:", "fat:", "bro:", "urs:"
 AUX_LEMMAS = {"be", "have", "do"}
 DEFAULT_BAD_VERB_LEMMAS = {"erm", "er", "um", "uh", "uhh", "wanna", "gonna", "gotta", "hafta", "cos"}
 DEFAULT_BAD_SENTENCE_WORDS = {"erm", "er", "um", "uh", "uhh", "wanna", "gonna", "gotta", "cos", "yeah"}
+# Small closed-class/function-word list used only as a title/list-fragment filter.
+# A candidate sentence with none of these is often a heading or noun-list row rather
+# than a natural carrier sentence. Keep this lightweight and dependency-free.
+BASIC_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "for",
+    "from", "has", "have", "he", "her", "his", "in", "is", "it", "its",
+    "of", "on", "or", "she", "that", "the", "their", "there", "they",
+    "this", "to", "was", "were", "which", "who", "with"
+}
 
 
 def is_word(tok: str) -> bool:
