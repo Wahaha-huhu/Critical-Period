@@ -101,6 +101,9 @@ def _is_noisy_sentence(sentence: str) -> str | None:
     low = sentence.lower()
     if any(x in low for x in BAD_MARKERS):
         return "transcript_or_markup"
+    # Wiki/markup remnants such as "= = = Heading = = =" are not good carrier sentences.
+    if "=" in sentence:
+        return "wiki_heading_or_markup"
     if re.search(r"\b[A-Z]{2,}\s*:", sentence):
         return "speaker_label"
     if ":" in sentence and len(sentence.split()) < 18:
@@ -260,6 +263,9 @@ def extract_spacy_candidates(
     exclude_lemmas: set[str] | None = None,
     exclude_sentence_words: set[str] | None = None,
     max_commas: int | None = None,
+    reject_double_quotes: bool = False,
+    max_terminal_punct: int | None = None,
+    reject_initial_quote: bool = False,
 ) -> tuple[list[PlacementCandidate], dict[str, int]]:
     nlp = _load_spacy(spacy_model)
     exclude_lemmas = set(exclude_lemmas or DEFAULT_BAD_VERB_LEMMAS)
@@ -280,6 +286,15 @@ def extract_spacy_candidates(
             continue
         if max_commas is not None and s.count(",") > max_commas:
             rejections["too_many_commas"] += 1
+            continue
+        if reject_double_quotes and ('"' in s or '“' in s or '”' in s):
+            rejections["quoted_or_dialogue_sentence"] += 1
+            continue
+        if reject_initial_quote and s.lstrip().startswith(("'", '"', '“', '”')):
+            rejections["initial_quote_sentence"] += 1
+            continue
+        if max_terminal_punct is not None and len(re.findall(r"[.!?]", s)) > max_terminal_punct:
+            rejections["multi_sentence_fragment"] += 1
             continue
         clean_sentences.append(s)
     for i, doc in enumerate(nlp.pipe(clean_sentences, batch_size=batch_size, n_process=n_process)):
@@ -421,6 +436,9 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
         exclude_lemmas=set(quality_cfg.get("exclude_lemmas", [])) if quality_cfg.get("exclude_lemmas") is not None else None,
         exclude_sentence_words=set(quality_cfg.get("exclude_sentence_words", [])) if quality_cfg.get("exclude_sentence_words") is not None else None,
         max_commas=quality_cfg.get("max_commas"),
+        reject_double_quotes=bool(quality_cfg.get("reject_double_quotes", False)),
+        max_terminal_punct=quality_cfg.get("max_terminal_punct"),
+        reject_initial_quote=bool(quality_cfg.get("reject_initial_quote", False)),
     ) if source_kind == "corpus" or bool(parser_cfg.get("use_spacy_for_demo", False)) else ([], {})
     if source_kind == "demo" and not cands:
         # Lightweight demo extraction without spaCy: find known inflected verbs.
