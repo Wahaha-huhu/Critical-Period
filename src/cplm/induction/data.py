@@ -70,7 +70,7 @@ def make_batch(
     role_mode: str = "shared",
     sequence_mode: str = "query",
 ) -> Dict[str, torch.Tensor]:
-    """Generate fresh multi-query associative-recall sequences.
+    """Generate fresh induction/associative-recall sequences.
 
     Keys and values are drawn from the same symbol vocabulary. Keys are unique within
     a sequence; values are sampled without replacement when possible. Labels are placed
@@ -82,6 +82,10 @@ def make_batch(
     if rng is None:
         rng = random
 
+    if sequence_mode == "copy_repeat":
+        # Classic repeated-subsequence induction task. We supervise the second
+        # occurrence of every token except the final segment token.
+        n_queries = max(1, n_pairs - 1)
     seq_len = sequence_length(n_pairs, n_queries)
     input_ids = torch.full((batch_size, seq_len), vocab.pad, dtype=torch.long)
     labels = torch.full((batch_size, seq_len), -100, dtype=torch.long)
@@ -106,6 +110,28 @@ def make_batch(
     for b in range(batch_size):
         keys = rng.sample(key_symbols, n_pairs)
         values = rng.sample(value_symbols, n_pairs) if len(value_symbols) >= n_pairs else [rng.choice(value_symbols) for _ in range(n_pairs)]
+        if sequence_mode == "copy_repeat":
+            # Use a repeated random segment rather than explicit key/value roles.
+            # This is the canonical [A][B] ... [A] -> [B] induction pattern:
+            # on the second occurrence of segment[i], the target is segment[i+1]
+            # from the first occurrence. Unique symbols remove ambiguity.
+            if len(symbols) < n_pairs:
+                raise ValueError("copy_repeat needs n_symbols >= n_pairs")
+            segment = rng.sample(symbols, n_pairs)
+            seq = [vocab.bos] + segment + segment + [vocab.eos]
+            base = 1 + n_pairs
+            for j in range(n_queries):
+                qpos = base + j
+                vpos = 1 + j + 1
+                labels[b, qpos] = segment[j + 1]
+                query_indices[b, j] = j
+                distances[b, j] = j
+                target_values[b, j] = segment[j + 1]
+                query_positions[b, j] = qpos
+                value_positions[b, j] = vpos
+            input_ids[b, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+            continue
+
         if query_pair_indices is None:
             if sequence_mode == "repeat" and n_queries <= n_pairs:
                 qidxs = rng.sample(list(range(n_pairs)), n_queries)

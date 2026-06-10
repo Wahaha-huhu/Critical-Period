@@ -71,6 +71,8 @@ def evaluate_recall(
     sequence_mode: str = "query",
 ) -> Dict[str, float]:
     model.eval()
+    if sequence_mode == "copy_repeat":
+        n_queries = max(1, n_pairs - 1)
     correct = 0
     total = 0
     loss_sum = 0.0

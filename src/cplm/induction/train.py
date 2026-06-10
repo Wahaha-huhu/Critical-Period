@@ -46,6 +46,8 @@ def build_model_and_vocab(cfg: Dict, device: str | torch.device):
     vocab = InductionVocab(n_symbols=int(data_cfg.get("n_symbols", 64)))
     n_pairs = int(data_cfg.get("n_pairs", 8))
     n_queries = int(data_cfg.get("n_queries", 1))
+    if str(data_cfg.get("sequence_mode", "query")) == "copy_repeat":
+        n_queries = max(1, n_pairs - 1)
     max_seq_len = max(int(model_cfg.get("max_seq_len", 0) or 0), sequence_length(n_pairs, n_queries))
     mcfg = InductionModelConfig(
         vocab_size=vocab.vocab_size,
@@ -70,6 +72,8 @@ def train_induction_base(cfg: Dict, out_dir: Path, device: str | torch.device) -
     eval_cfg = cfg.get("eval", {})
     n_pairs = int(data_cfg.get("n_pairs", 8))
     n_queries = int(data_cfg.get("n_queries", 1))
+    if str(data_cfg.get("sequence_mode", "query")) == "copy_repeat":
+        n_queries = max(1, n_pairs - 1)
     batch_size = int(train_cfg.get("batch_size", 64))
     total_steps = int(train_cfg.get("total_steps", 1000))
     grad_clip = float(train_cfg.get("grad_clip", 1.0))
