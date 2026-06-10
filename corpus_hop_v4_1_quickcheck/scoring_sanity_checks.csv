@@ -1,3 +1,0 @@
-case,correct,incorrect,correct_logprob,incorrect_logprob,expected_correct
-marker_margin_positive,S,P,-0.1,-2.0,True
-marker_margin_negative,P,S,-3.0,-0.2,False

@@ -1,0 +1,71 @@
+seed: 0
+output_dir: results/dataset_validation/placement_hop_v5b_babylm_clean
+
+corpus:
+  # Cleaner BabyLM sources for the placement-only LM-tier probe.
+  # Spoken/transcript-heavy files are useful for BabyLM training, but too noisy for
+  # constructing audited verb/lemma placement probes.
+  globs:
+    - data/babylm_2026_strict_small/gutenberg.train.txt
+    - data/babylm_2026_strict_small/simple_wiki.train.txt
+  max_sentences: 300000
+  use_demo_if_no_corpus: false
+  demo_sentences: 4000
+
+parser:
+  spacy_model: en_core_web_sm
+  batch_size: 512
+  n_process: 4
+  progress_every: 25000
+  max_candidates: null
+
+cache:
+  dir: cache/placement_hop_v5
+  reuse: true
+
+# Quality filters for the scientific corpus probe. The placement-only design does
+# not score subject number, but requiring a visible subject is a cheap way to avoid
+# POS false positives such as nouns/disfluencies tagged as verbs.
+quality:
+  require_subject: true
+  max_commas: 3
+  exclude_lemmas:
+    - erm
+    - er
+    - um
+    - uh
+    - uhh
+    - wanna
+    - gonna
+    - gotta
+    - hafta
+    - cos
+  exclude_sentence_words:
+    - erm
+    - er
+    - um
+    - uh
+    - uhh
+    - wanna
+    - gonna
+    - gotta
+    - cos
+    - yeah
+
+wordhop:
+  marker: "<HOP>"
+  hop_distance: 4
+  n_train: 1000
+  n_probe: 300
+  min_len: 8
+  max_len: 80
+
+naturalness:
+  proxy_threshold: 1.5
+  reference_sentences: 5000
+
+facts:
+  enabled: true
+  n_train: 200
+  n_probe: 50
+  probe_depth: memorization

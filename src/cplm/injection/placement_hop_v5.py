@@ -16,6 +16,8 @@ from typing import Any, Iterable
 PUNCT = {",", ".", ";", ":", "!", "?"}
 BAD_MARKERS = ["xxx", ".cha", "speaker:", "mot:", "chi:", "fat:", "bro:", "urs:", "childes_"]
 AUX_LEMMAS = {"be", "have", "do"}
+DEFAULT_BAD_VERB_LEMMAS = {"erm", "er", "um", "uh", "uhh", "wanna", "gonna", "gotta", "hafta", "cos"}
+DEFAULT_BAD_SENTENCE_WORDS = {"erm", "er", "um", "uh", "uhh", "wanna", "gonna", "gotta", "cos", "yeah"}
 
 
 def is_word(tok: str) -> bool:
@@ -254,8 +256,14 @@ def extract_spacy_candidates(
     max_len: int = 96,
     max_candidates: int | None = None,
     progress_every: int = 25000,
+    require_subject: bool = False,
+    exclude_lemmas: set[str] | None = None,
+    exclude_sentence_words: set[str] | None = None,
+    max_commas: int | None = None,
 ) -> tuple[list[PlacementCandidate], dict[str, int]]:
     nlp = _load_spacy(spacy_model)
+    exclude_lemmas = set(exclude_lemmas or DEFAULT_BAD_VERB_LEMMAS)
+    exclude_sentence_words = set(exclude_sentence_words or DEFAULT_BAD_SENTENCE_WORDS)
     candidates: list[PlacementCandidate] = []
     rejections: Counter[str] = Counter()
     t0 = time.time()
@@ -265,6 +273,13 @@ def extract_spacy_candidates(
         reason = _is_noisy_sentence(s)
         if reason:
             rejections[reason] += 1
+            continue
+        low_words = set(re.findall(r"[a-z']+", s.lower()))
+        if low_words & exclude_sentence_words:
+            rejections["excluded_discourse_or_transcript_word"] += 1
+            continue
+        if max_commas is not None and s.count(",") > max_commas:
+            rejections["too_many_commas"] += 1
             continue
         clean_sentences.append(s)
     for i, doc in enumerate(nlp.pipe(clean_sentences, batch_size=batch_size, n_process=n_process)):
@@ -279,6 +294,10 @@ def extract_spacy_candidates(
         if tokens and tokens[0].islower():
             rejections["lowercase_initial"] += 1
             continue
+        # Reject obvious spaced acronyms/transcript remnants such as D O E or P P G.
+        if sum(1 for t in tokens if len(t) == 1 and t.isalpha() and t.isupper()) >= 2:
+            rejections["spaced_acronym_or_transcript_fragment"] += 1
+            continue
         # Placement-only: need verb identity + lemma only. Keep one lexical present verb.
         verbs = []
         for tok in doc:
@@ -289,8 +308,19 @@ def extract_spacy_candidates(
             if tok.lemma_.lower() in AUX_LEMMAS:
                 continue
             lemma = tok.lemma_.lower()
+            if lemma in exclude_lemmas:
+                continue
             if not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", lemma):
                 continue
+            if not tok.text.isalpha():
+                continue
+            if require_subject:
+                has_subject = any(getattr(ch, "dep_", "") in {"nsubj", "nsubjpass", "expl"} for ch in tok.children)
+                # For coordinated verbs, allow an inherited subject from the head verb.
+                if not has_subject and getattr(tok, "dep_", "") == "conj" and getattr(tok.head, "pos_", "") == "VERB":
+                    has_subject = any(getattr(ch, "dep_", "") in {"nsubj", "nsubjpass", "expl"} for ch in tok.head.children)
+                if not has_subject:
+                    continue
             verbs.append((tok.i, tok.text, lemma))
         if len(verbs) != 1:
             rejections[f"qualifying_verb_count_{len(verbs)}"] += 1
@@ -337,7 +367,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def cache_path(cache_dir: Path, *, corpus_globs: list[str], parser: str, spacy_model: str, max_sentences: int | None, hop_distance: int, min_len: int, max_len: int) -> Path:
+def cache_path(cache_dir: Path, *, corpus_globs: list[str], parser: str, spacy_model: str, max_sentences: int | None, hop_distance: int, min_len: int, max_len: int, quality_cfg: dict[str, Any] | None = None) -> Path:
     key = config_hash({
         "globs": corpus_globs,
         "parser": parser,
@@ -346,6 +376,7 @@ def cache_path(cache_dir: Path, *, corpus_globs: list[str], parser: str, spacy_m
         "hop_distance": hop_distance,
         "min_len": min_len,
         "max_len": max_len,
+        "quality": quality_cfg or {},
     })
     return cache_dir / f"placement_candidates_{key}.jsonl"
 
@@ -355,6 +386,7 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
     parser_cfg = cfg.get("parser", {})
     word_cfg = cfg.get("wordhop", {})
     cache_cfg = cfg.get("cache", {})
+    quality_cfg = cfg.get("quality", {})
     cache_dir = Path(cache_cfg.get("dir", "cache/placement_hop_v5"))
     cache_dir.mkdir(parents=True, exist_ok=True)
     globs_ = list(corpus_cfg.get("globs", []) or [])
@@ -363,7 +395,7 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
     min_len = int(word_cfg.get("min_len", 8))
     max_len = int(word_cfg.get("max_len", 96))
     spacy_model = str(parser_cfg.get("spacy_model", "en_core_web_sm"))
-    cp = cache_path(cache_dir, corpus_globs=globs_, parser="spacy", spacy_model=spacy_model, max_sentences=max_sentences, hop_distance=hop_distance, min_len=min_len, max_len=max_len)
+    cp = cache_path(cache_dir, corpus_globs=globs_, parser="spacy", spacy_model=spacy_model, max_sentences=max_sentences, hop_distance=hop_distance, min_len=min_len, max_len=max_len, quality_cfg=quality_cfg)
     if cp.exists() and bool(cache_cfg.get("reuse", True)):
         rows = read_jsonl(cp)
         cands = [PlacementCandidate.from_json(r) for r in rows]
@@ -385,6 +417,10 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
         max_len=max_len,
         max_candidates=parser_cfg.get("max_candidates"),
         progress_every=int(parser_cfg.get("progress_every", 25000)),
+        require_subject=bool(quality_cfg.get("require_subject", False)),
+        exclude_lemmas=set(quality_cfg.get("exclude_lemmas", [])) if quality_cfg.get("exclude_lemmas") is not None else None,
+        exclude_sentence_words=set(quality_cfg.get("exclude_sentence_words", [])) if quality_cfg.get("exclude_sentence_words") is not None else None,
+        max_commas=quality_cfg.get("max_commas"),
     ) if source_kind == "corpus" or bool(parser_cfg.get("use_spacy_for_demo", False)) else ([], {})
     if source_kind == "demo" and not cands:
         # Lightweight demo extraction without spaCy: find known inflected verbs.
