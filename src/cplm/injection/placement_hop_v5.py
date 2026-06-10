@@ -275,6 +275,10 @@ def extract_spacy_candidates(
     reject_semicolon: bool = False,
     reject_apostrophe: bool = False,
     reject_problem_phrases: bool = False,
+    reject_colon: bool = False,
+    reject_comma_no_space: bool = False,
+    reject_roman_numeral_heading: bool = False,
+    min_stopword_count: int = 0,
 ) -> tuple[list[PlacementCandidate], dict[str, int]]:
     nlp = _load_spacy(spacy_model)
     exclude_lemmas = set(exclude_lemmas or DEFAULT_BAD_VERB_LEMMAS)
@@ -317,6 +321,20 @@ def extract_spacy_candidates(
             low_s = re.sub(r"\s+", " ", s.lower())
             if any(phrase in low_s for phrase in ["more than people", "about the and", "they way they", "hleped", "can not understand or solve"]):
                 rejections["known_bad_simplewiki_fragment"] += 1
+                continue
+        if reject_colon and ":" in s:
+            rejections["colon_sentence"] += 1
+            continue
+        if reject_comma_no_space and re.search(r",\S", s):
+            rejections["comma_without_space"] += 1
+            continue
+        if reject_roman_numeral_heading and re.match(r"^(Act|Chapter|Part|Book)\s+[IVXLCM]+\b", s.strip()):
+            rejections["roman_numeral_heading"] += 1
+            continue
+        if min_stopword_count:
+            words_for_stop = re.findall(r"[A-Za-z']+", s.lower())
+            if sum(1 for w in words_for_stop if w in BASIC_STOPWORDS) < int(min_stopword_count):
+                rejections["too_few_stopwords_title_like"] += 1
                 continue
         if max_terminal_punct is not None and len(re.findall(r"[.!?]", s)) > max_terminal_punct:
             rejections["multi_sentence_fragment"] += 1
@@ -483,6 +501,10 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
         reject_semicolon=bool(quality_cfg.get("reject_semicolon", False)),
         reject_apostrophe=bool(quality_cfg.get("reject_apostrophe", False)),
         reject_problem_phrases=bool(quality_cfg.get("reject_problem_phrases", False)),
+        reject_colon=bool(quality_cfg.get("reject_colon", False)),
+        reject_comma_no_space=bool(quality_cfg.get("reject_comma_no_space", False)),
+        reject_roman_numeral_heading=bool(quality_cfg.get("reject_roman_numeral_heading", False)),
+        min_stopword_count=int(quality_cfg.get("min_stopword_count", 0)),
     ) if source_kind == "corpus" or bool(parser_cfg.get("use_spacy_for_demo", False)) else ([], {})
     if source_kind == "demo" and not cands:
         # Lightweight demo extraction without spaCy: find known inflected verbs.
