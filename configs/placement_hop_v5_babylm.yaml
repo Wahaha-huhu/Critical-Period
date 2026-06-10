@@ -1,0 +1,40 @@
+seed: 0
+output_dir: results/dataset_validation/placement_hop_v5_babylm
+
+corpus:
+  # Put BabyLM or other natural English text globs here.
+  globs:
+    - data/babylm_2026_strict_small/*.train.txt
+  max_sentences: 200000
+  use_demo_if_no_corpus: false
+  demo_sentences: 4000
+
+parser:
+  spacy_model: en_core_web_sm
+  batch_size: 512
+  # On CPU-only nodes, set this to the available CPU cores. Use 1 if multiprocessing is unstable.
+  n_process: 4
+  progress_every: 25000
+  max_candidates: null
+
+cache:
+  dir: cache/placement_hop_v5
+  reuse: true
+
+wordhop:
+  marker: "<HOP>"
+  hop_distance: 4
+  n_train: 1000
+  n_probe: 300
+  min_len: 8
+  max_len: 96
+
+naturalness:
+  proxy_threshold: 1.5
+  reference_sentences: 5000
+
+facts:
+  enabled: true
+  n_train: 200
+  n_probe: 50
+  probe_depth: memorization

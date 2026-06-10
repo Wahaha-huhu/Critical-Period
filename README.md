@@ -154,3 +154,19 @@ PYTHONPATH=src python scripts/build_corpus_hop_datasets.py \
 ```
 
 Set `corpus.globs` in the config to local BabyLM/Pythia-domain text. If no files are matched and `use_demo_if_no_corpus: true`, the builder uses a natural-looking demo fallback only for smoke testing.
+
+## Placement-HOP v5 quick start
+
+The revised roadmap uses a neutral-marker placement-only HOP probe for BabyLM/Pythia-tier language data. Build it with:
+
+```bash
+PYTHONPATH=src python scripts/build_placement_hop_v5.py --config configs/placement_hop_v5_babylm.yaml
+```
+
+For a no-corpus smoke test:
+
+```bash
+PYTHONPATH=src python scripts/build_placement_hop_v5.py --config configs/placement_hop_v5_demo.yaml
+```
+
+The v5 builder caches spaCy-extracted candidates under `cache/placement_hop_v5/`, so later reruns skip CPU parsing.
