@@ -1,0 +1,44 @@
+# Final LM-tier protocol/package builder for the frozen v5h placement probe.
+# This does not regenerate the structural WORDHOP/NOHOP dataset. It packages
+# the accepted structural split, regenerates a memorisation-only fact control,
+# reserves natural washout text, and writes the Pythia token/scoring protocol.
+
+placement_dir: results/dataset_validation/placement_hop_v5h_babylm_simplewiki_scientific
+output_dir: results/lm_tier_protocol/placement_hop_v5h_lm_tier
+seed: 17
+
+facts:
+  enabled: true
+  train_entities: 200          # background injected facts
+  probe_entities: 50           # facts also injected, then memorisation-probed
+  probe_depth: memorization
+
+washout:
+  enabled: true
+  globs:
+    - data/babylm_2026_strict_small/simple_wiki.train.txt
+  n_sentences: 5000
+  min_words: 8
+  max_words: 80
+  allow_if_corpus_missing: false
+
+scoring:
+  marker: "<HOP>"
+  placement_shortcut_floor_exact: 0.15
+  placement_margin: "log p(<HOP> at true slot) - max log p(<HOP> at incorrect candidate slots)"
+  candidate_positions: "Use metric_targets.placement.candidate_positions from each record."
+
+pythia_token:
+  marker: "<HOP>"
+  add_as_special_token: true
+  init_method: mean_existing_embedding
+  required_diagnostics:
+    - pre_score_after_resizing_before_injection
+    - hop_embedding_update_norm
+    - hop_embedding_gradient_norm
+    - transformer_block_gradient_norm
+    - embedding_vs_deep_gradient_ratio
+    - optional_embedding_only_ablation_one_checkpoint
+
+audit:
+  n_rows_to_complete: 30

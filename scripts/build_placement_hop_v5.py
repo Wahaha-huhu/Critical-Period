@@ -33,7 +33,7 @@ def main() -> None:
         facts = build_factual_dataset(n_train=int(fact_cfg.get("n_train", 200)), n_probe=int(fact_cfg.get("n_probe", 50)), seed=int(cfg.get("seed", 0)) + 1009)
         # Keep only memorisation probes for the light specificity control if requested.
         if fact_cfg.get("probe_depth", "memorization") == "memorization":
-            facts["facts_probe"] = [r for r in facts["facts_probe"] if r.get("probe_type") == "memorization"] or facts["facts_probe"][: int(fact_cfg.get("n_probe", 50))]
+            facts["facts_probe"] = [r for r in facts["facts_probe"] if r.get("depth") == "memorization"] or facts["facts_probe"][: int(fact_cfg.get("n_probe", 50))]
         data.update(facts)
 
     dataset_dir = out_dir / "datasets"
