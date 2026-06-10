@@ -1,0 +1,56 @@
+run_id: toy_mechanism_joint_s2_const1e4
+output_dir: results/toy_mechanism
+overwrite: true
+seed: 0
+device: auto
+torch_num_threads: 1
+toy:
+  representation: joint
+model:
+  d_model: 32
+  n_layers: 1
+  n_heads: 4
+  d_ff: 64
+  dropout: 0.0
+base_train:
+  schedule: s2_constant
+  total_steps: 12000
+  warmup_steps: 500
+  peak_lr: 0.001
+  constant_lr: 0.0001
+  batch_size: 256
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every: 100
+  eval_every: 500
+  checkpoint_steps:
+  - 0
+  - 250
+  - 500
+  - 1000
+  - 2000
+  - 4000
+  - 8000
+  - 12000
+probe:
+  steps: 150
+  lr: 0.05
+injection:
+  checkpoint_steps:
+  - 250
+  - 500
+  - 1000
+  - 2000
+  - 4000
+  - 8000
+  - 12000
+  steps: 100
+  lr: 0.0003
+  batch_size: 256
+  grad_clip: 1.0
+  log_every: 50
+washout:
+  steps: 200
+  lr: 0.0002
+  grad_clip: 1.0
+  log_every: 100
