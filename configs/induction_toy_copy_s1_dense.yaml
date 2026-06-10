@@ -1,0 +1,39 @@
+run_id: induction_toy_copy_s1_dense_seed0
+overwrite: true
+output_dir: results/induction_toy
+device: auto
+torch_num_threads: 1
+seed: 0
+
+data:
+  n_symbols: 128
+  n_pairs: 16
+  n_queries: 15
+  role_mode: shared
+  sequence_mode: copy_repeat
+
+model:
+  d_model: 128
+  n_layers: 2
+  n_heads: 4
+  d_ff: 256
+  dropout: 0.0
+  tie_embeddings: true
+  max_seq_len: 128
+
+base_train:
+  schedule: s1_decay
+  total_steps: 5000
+  warmup_steps: 300
+  peak_lr: 0.0007
+  min_lr: 0.00001
+  batch_size: 64
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every: 50
+  eval_every: 50
+  checkpoint_steps: [0, 50, 100, 150, 200, 250, 300, 500, 800, 1200, 1800, 2500, 3500, 5000]
+
+eval:
+  batch_size: 256
+  n_batches: 4

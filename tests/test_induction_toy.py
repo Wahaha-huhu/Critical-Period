@@ -27,3 +27,17 @@ def test_induction_model_eval_smoke():
     assert "recall_accuracy" in metrics
     assert "induction_score" in metrics
     assert "acc_dist_0" in metrics
+
+from cplm.induction.train import lr_at_step
+
+
+def test_induction_lr_schedules():
+    base = {"total_steps": 1000, "warmup_steps": 100, "peak_lr": 1e-3, "min_lr": 1e-5}
+    assert lr_at_step(50, {**base, "schedule": "s1_decay"}) == 5e-4
+    assert lr_at_step(1000, {**base, "schedule": "s1_decay"}) <= 1.1e-5
+    assert lr_at_step(500, {**base, "schedule": "s2_constant", "constant_lr": 2e-4}) == 2e-4
+    cyc = {**base, "schedule": "s3_cyclic", "max_lr": 3e-4, "min_lr": 3e-5, "cycle_steps": 200}
+    assert lr_at_step(101, cyc) <= 3e-4
+    assert lr_at_step(101, cyc) >= 3e-5
+    assert lr_at_step(301, cyc) <= 3e-4
+    assert lr_at_step(301, cyc) >= 3e-5

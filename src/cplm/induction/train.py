@@ -23,6 +23,15 @@ def set_seed(seed: int) -> None:
 
 
 def lr_at_step(step: int, cfg: Dict) -> float:
+    """Learning-rate schedule used by the induction toy.
+
+    S1 is the standard warmup + cosine decay schedule.
+    S2 is warmup + constant post-warmup rate.
+    S3 is warmup + cosine-restart cycles, used as a plasticity-restoration
+    counterfactual. All schedules share the same optimiser, weight decay, data,
+    batch size, and total training length; only the post-warmup LR trajectory
+    changes.
+    """
     sched = cfg.get("schedule", "s1_decay")
     warmup = int(cfg.get("warmup_steps", 0))
     peak_lr = float(cfg.get("peak_lr", cfg.get("lr", 5e-4)))
@@ -37,6 +46,16 @@ def lr_at_step(step: int, cfg: Dict) -> float:
         return min_lr + (peak_lr - min_lr) * cosine
     if sched == "s2_constant":
         return float(cfg.get("constant_lr", peak_lr))
+    if sched in {"s3_cyclic", "s3_restart", "cyclic_restart"}:
+        min_lr = float(cfg.get("min_lr", peak_lr * 0.05))
+        max_lr = float(cfg.get("max_lr", peak_lr))
+        cycle_steps = int(cfg.get("cycle_steps", max(1, (total - warmup) // 4)))
+        # Cosine-restart cycle: high immediately after each restart and low just
+        # before the next restart. This is intentionally simple and deterministic.
+        phase = (step - warmup) % max(1, cycle_steps)
+        progress = phase / max(1, cycle_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr + (max_lr - min_lr) * cosine
     raise ValueError(f"Unknown schedule: {sched}")
 
 
