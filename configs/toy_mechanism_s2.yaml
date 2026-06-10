@@ -1,0 +1,44 @@
+run_id: toy_mechanism_s2
+output_dir: results/toy_mechanism
+overwrite: true
+seed: 0
+device: auto
+torch_num_threads: 1
+
+model:
+  d_model: 64
+  n_layers: 2
+  n_heads: 4
+  d_ff: 128
+  dropout: 0.0
+
+base_train:
+  schedule: s2_constant
+  total_steps: 8000
+  warmup_steps: 400
+  peak_lr: 0.001
+  constant_lr: 0.001
+  batch_size: 256
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every: 100
+  eval_every: 500
+  checkpoint_steps: [0, 500, 1000, 2000, 4000, 6000, 8000]
+
+probe:
+  steps: 150
+  lr: 0.1
+
+injection:
+  checkpoint_steps: [500, 1000, 2000, 4000, 6000, 8000]
+  steps: 500
+  lr: 0.001
+  batch_size: 256
+  grad_clip: 1.0
+  log_every: 100
+
+washout:
+  steps: 300
+  lr: 0.0005
+  grad_clip: 1.0
+  log_every: 100

@@ -1,0 +1,44 @@
+run_id: toy_mechanism_smoke
+output_dir: results/toy_mechanism
+overwrite: true
+seed: 0
+device: auto
+torch_num_threads: 1
+
+model:
+  d_model: 24
+  n_layers: 1
+  n_heads: 2
+  d_ff: 48
+  dropout: 0.0
+
+base_train:
+  schedule: s1_decay
+  total_steps: 80
+  warmup_steps: 10
+  peak_lr: 0.001
+  min_lr: 0.00005
+  batch_size: 256
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every: 20
+  eval_every: 40
+  checkpoint_steps: [0, 40, 80]
+
+probe:
+  steps: 20
+  lr: 0.1
+
+injection:
+  checkpoint_steps: [40, 80]
+  steps: 40
+  lr: 0.001
+  batch_size: 256
+  grad_clip: 1.0
+  log_every: 20
+
+washout:
+  steps: 20
+  lr: 0.0005
+  grad_clip: 1.0
+  log_every: 20

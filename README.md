@@ -44,3 +44,13 @@ PYTHONPATH=src python scripts/build_placement_hop_v5.py \
 ```
 
 If it lacks enough candidates, use the smaller fallback config.
+
+## Toy mechanism experiment
+
+This repo includes the first implementation of the lead toy mechanism experiment:
+
+```bash
+PYTHONPATH=src python scripts/run_toy_mechanism.py --config configs/toy_mechanism_smoke.yaml
+```
+
+See `docs/toy_mechanism_experiment.md`.
