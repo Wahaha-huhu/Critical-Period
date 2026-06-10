@@ -266,10 +266,14 @@ def extract_spacy_candidates(
     reject_double_quotes: bool = False,
     max_terminal_punct: int | None = None,
     reject_initial_quote: bool = False,
+    allow_conj_inherited_subject: bool = False,
+    require_direct_subject: bool = True,
+    allowed_verb_deps: set[str] | None = None,
 ) -> tuple[list[PlacementCandidate], dict[str, int]]:
     nlp = _load_spacy(spacy_model)
     exclude_lemmas = set(exclude_lemmas or DEFAULT_BAD_VERB_LEMMAS)
     exclude_sentence_words = set(exclude_sentence_words or DEFAULT_BAD_SENTENCE_WORDS)
+    allowed_verb_deps = set(allowed_verb_deps or {"ROOT", "relcl", "advcl", "ccomp", "xcomp", "conj"})
     candidates: list[PlacementCandidate] = []
     rejections: Counter[str] = Counter()
     t0 = time.time()
@@ -296,6 +300,9 @@ def extract_spacy_candidates(
         if max_terminal_punct is not None and len(re.findall(r"[.!?]", s)) > max_terminal_punct:
             rejections["multi_sentence_fragment"] += 1
             continue
+        if re.search(r"\b(Mr|Mrs|Ms|Dr|Prof|St)\.$", s.strip()):
+            rejections["trailing_abbreviation_fragment"] += 1
+            continue
         clean_sentences.append(s)
     for i, doc in enumerate(nlp.pipe(clean_sentences, batch_size=batch_size, n_process=n_process)):
         if progress_every and i and i % progress_every == 0:
@@ -318,6 +325,8 @@ def extract_spacy_candidates(
         for tok in doc:
             if tok.is_space or tok.pos_ != "VERB":
                 continue
+            if getattr(tok, "dep_", "") not in allowed_verb_deps:
+                continue
             if tok.tag_ not in {"VBZ", "VBP"}:
                 continue
             if tok.lemma_.lower() in AUX_LEMMAS:
@@ -331,9 +340,12 @@ def extract_spacy_candidates(
                 continue
             if require_subject:
                 has_subject = any(getattr(ch, "dep_", "") in {"nsubj", "nsubjpass", "expl"} for ch in tok.children)
-                # For coordinated verbs, allow an inherited subject from the head verb.
-                if not has_subject and getattr(tok, "dep_", "") == "conj" and getattr(tok.head, "pos_", "") == "VERB":
+                # For scientific probes, direct subjects are preferred. Inherited subjects for coordinated
+                # verbs often admit false positives in noun-like spans (e.g. plural common nouns tagged as verbs).
+                if (not has_subject) and allow_conj_inherited_subject and getattr(tok, "dep_", "") == "conj" and getattr(tok.head, "pos_", "") == "VERB":
                     has_subject = any(getattr(ch, "dep_", "") in {"nsubj", "nsubjpass", "expl"} for ch in tok.head.children)
+                if require_direct_subject and not any(getattr(ch, "dep_", "") in {"nsubj", "nsubjpass", "expl"} for ch in tok.children):
+                    continue
                 if not has_subject:
                     continue
             verbs.append((tok.i, tok.text, lemma))
@@ -439,6 +451,9 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
         reject_double_quotes=bool(quality_cfg.get("reject_double_quotes", False)),
         max_terminal_punct=quality_cfg.get("max_terminal_punct"),
         reject_initial_quote=bool(quality_cfg.get("reject_initial_quote", False)),
+        allow_conj_inherited_subject=bool(quality_cfg.get("allow_conj_inherited_subject", False)),
+        require_direct_subject=bool(quality_cfg.get("require_direct_subject", True)),
+        allowed_verb_deps=set(quality_cfg.get("allowed_verb_deps", ["ROOT", "relcl", "advcl", "ccomp", "xcomp"])),
     ) if source_kind == "corpus" or bool(parser_cfg.get("use_spacy_for_demo", False)) else ([], {})
     if source_kind == "demo" and not cands:
         # Lightweight demo extraction without spaCy: find known inflected verbs.
@@ -543,18 +558,46 @@ def _select_split(cands: list[PlacementCandidate], n_train: int, n_probe: int, s
     def corr_probe(probe_ids: list[int]) -> float:
         return abs(_corr([float(feats[i]["marker_index"]) for i in probe_ids], [float(feats[i]["source_length"]) for i in probe_ids]))
 
+    def probe_slot_concentration(probe_ids: list[int]) -> float:
+        return Counter(feats[i]["marker_index"] for i in probe_ids).most_common(1)[0][1] / max(1, len(probe_ids))
+
+    def probe_frame_bucket_concentration(probe_ids: list[int]) -> float:
+        # Diagnostic for mode/frame shortcut risk: within a position-only bucket, avoid one marker
+        # slot dominating the probe. This is stricter than the hard validator and only guides sampling.
+        buckets: dict[tuple, Counter] = defaultdict(Counter)
+        for i in probe_ids:
+            key = (feats[i]["frame_shape"], feats[i]["source_length"] // 5)
+            buckets[key][feats[i]["marker_index"]] += 1
+        vals = []
+        for ctr in buckets.values():
+            n = sum(ctr.values())
+            if n >= 4:
+                vals.append(ctr.most_common(1)[0][1] / n)
+        return max(vals) if vals else 0.0
+
     def score(train_ids: list[int], probe_ids: list[int]) -> float:
         m = mode_acc(train_ids, probe_ids)
         l = length_acc(train_ids, probe_ids)
         f = frame_acc(train_ids, probe_ids)
         a = adv_acc(train_ids, probe_ids)
         c = corr_probe(probe_ids)
-        excess = max(0, m-0.14)*20 + max(0, l-0.14)*20 + max(0, f-0.24)*20 + max(0, a-0.24)*20
-        return 8*a + 5*f + 4*m + 4*l + 2*c + 50*excess
+        slot_conc = probe_slot_concentration(probe_ids)
+        bucket_conc = probe_frame_bucket_concentration(probe_ids)
+        # Strong hard-threshold penalties. We prefer a slightly smaller/narrower natural sample to one
+        # that formally passes quality filters but remains shortcuttable. C3/C4 correlations remain diagnostics.
+        excess = (
+            max(0, m - 0.145) * 200
+            + max(0, l - 0.145) * 100
+            + max(0, f - 0.245) * 200
+            + max(0, a - 0.245) * 200
+            + max(0, slot_conc - 0.14) * 50
+            + max(0, bucket_conc - 0.75) * 10
+        )
+        return 12*a + 10*f + 8*m + 4*l + 1.5*c + 2*slot_conc + 0.5*bucket_conc + 100*excess
 
     ids = list(range(len(pool)))
     best_train_ids = None; best_probe_ids = None; best_score = 1e18
-    trials = min(500, max(120, len(pool)//10))
+    trials = min(8000, max(2000, len(pool)))
     for _ in range(trials):
         probe_ids = rng.sample(ids, n_probe)
         probe_set = set(probe_ids)
