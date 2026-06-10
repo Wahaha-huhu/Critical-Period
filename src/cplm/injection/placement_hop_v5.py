@@ -269,11 +269,18 @@ def extract_spacy_candidates(
     allow_conj_inherited_subject: bool = False,
     require_direct_subject: bool = True,
     allowed_verb_deps: set[str] | None = None,
+    allowed_verb_tags: set[str] | None = None,
+    require_lemma_change: bool = False,
+    reject_parentheses: bool = False,
+    reject_semicolon: bool = False,
+    reject_apostrophe: bool = False,
+    reject_problem_phrases: bool = False,
 ) -> tuple[list[PlacementCandidate], dict[str, int]]:
     nlp = _load_spacy(spacy_model)
     exclude_lemmas = set(exclude_lemmas or DEFAULT_BAD_VERB_LEMMAS)
     exclude_sentence_words = set(exclude_sentence_words or DEFAULT_BAD_SENTENCE_WORDS)
     allowed_verb_deps = set(allowed_verb_deps or {"ROOT", "relcl", "advcl", "ccomp", "xcomp", "conj"})
+    allowed_verb_tags = set(allowed_verb_tags or {"VBZ", "VBP"})
     candidates: list[PlacementCandidate] = []
     rejections: Counter[str] = Counter()
     t0 = time.time()
@@ -297,6 +304,20 @@ def extract_spacy_candidates(
         if reject_initial_quote and s.lstrip().startswith(("'", '"', '“', '”')):
             rejections["initial_quote_sentence"] += 1
             continue
+        if reject_parentheses and any(ch in s for ch in ["(", ")", "[", "]", "{", "}"]):
+            rejections["parenthetical_or_bracketed_sentence"] += 1
+            continue
+        if reject_semicolon and ";" in s:
+            rejections["semicolon_sentence"] += 1
+            continue
+        if reject_apostrophe and ("'" in s or "’" in s):
+            rejections["apostrophe_or_contraction_sentence"] += 1
+            continue
+        if reject_problem_phrases:
+            low_s = re.sub(r"\s+", " ", s.lower())
+            if any(phrase in low_s for phrase in ["more than people", "about the and", "they way they", "hleped", "can not understand or solve"]):
+                rejections["known_bad_simplewiki_fragment"] += 1
+                continue
         if max_terminal_punct is not None and len(re.findall(r"[.!?]", s)) > max_terminal_punct:
             rejections["multi_sentence_fragment"] += 1
             continue
@@ -327,12 +348,14 @@ def extract_spacy_candidates(
                 continue
             if getattr(tok, "dep_", "") not in allowed_verb_deps:
                 continue
-            if tok.tag_ not in {"VBZ", "VBP"}:
+            if tok.tag_ not in allowed_verb_tags:
                 continue
             if tok.lemma_.lower() in AUX_LEMMAS:
                 continue
             lemma = tok.lemma_.lower()
             if lemma in exclude_lemmas:
+                continue
+            if require_lemma_change and tok.text.lower() == lemma.lower():
                 continue
             if not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", lemma):
                 continue
@@ -454,6 +477,12 @@ def load_or_build_candidate_cache(cfg: dict[str, Any]) -> tuple[list[PlacementCa
         allow_conj_inherited_subject=bool(quality_cfg.get("allow_conj_inherited_subject", False)),
         require_direct_subject=bool(quality_cfg.get("require_direct_subject", True)),
         allowed_verb_deps=set(quality_cfg.get("allowed_verb_deps", ["ROOT", "relcl", "advcl", "ccomp", "xcomp"])),
+        allowed_verb_tags=set(quality_cfg.get("allowed_verb_tags", ["VBZ", "VBP"])),
+        require_lemma_change=bool(quality_cfg.get("require_lemma_change", False)),
+        reject_parentheses=bool(quality_cfg.get("reject_parentheses", False)),
+        reject_semicolon=bool(quality_cfg.get("reject_semicolon", False)),
+        reject_apostrophe=bool(quality_cfg.get("reject_apostrophe", False)),
+        reject_problem_phrases=bool(quality_cfg.get("reject_problem_phrases", False)),
     ) if source_kind == "corpus" or bool(parser_cfg.get("use_spacy_for_demo", False)) else ([], {})
     if source_kind == "demo" and not cands:
         # Lightweight demo extraction without spaCy: find known inflected verbs.

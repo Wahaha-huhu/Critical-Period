@@ -33,3 +33,14 @@ PYTHONPATH=src python scripts/build_placement_hop_v5.py \
 ```
 
 See `docs/placement_hop_v5f_simplewiki.md` for details.
+
+## v5g scientific-quality SimpleWiki placement probe
+
+For the final corpus-derived neutral-marker placement probe, prefer:
+
+```bash
+PYTHONPATH=src python scripts/build_placement_hop_v5.py \
+  --config configs/placement_hop_v5g_babylm_simplewiki_scientific.yaml
+```
+
+If it lacks enough candidates, use the smaller fallback config.
