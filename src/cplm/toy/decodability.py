@@ -4,16 +4,25 @@ from typing import Dict
 import torch
 from torch import nn
 
-from .data import full_factorial_eval_batch
+from .data import full_factorial_eval_batch, Representation
 
 
 @torch.no_grad()
-def collect_hidden(model: nn.Module, device: str | torch.device = "cpu", repeats: int = 512):
+def collect_hidden(
+    model: nn.Module,
+    device: str | torch.device = "cpu",
+    repeats: int = 512,
+    *,
+    representation: Representation = "separate",
+):
     model.eval()
-    batch = full_factorial_eval_batch("base", device=device, repeats=repeats)
+    batch = full_factorial_eval_batch("base", device=device, repeats=repeats, representation=representation)
     _, h = model(batch.input_ids, return_hidden=True)
-    # Hidden after class token sees BOS, type, class.
-    features = h[:, 2, :].detach()
+    # Mechanism-relevant decodability: can class be decoded at the base query
+    # position, i.e. where the model must predict the label after seeing all
+    # task inputs? The old probe used the class-token position, which made
+    # separate-token decodability trivially 1.0.
+    features = h[:, batch.query_pos, :].detach()
     labels = batch.class_ids.detach()
     return features, labels
 
@@ -25,9 +34,10 @@ def linear_probe_class_decodability(
     steps: int = 200,
     lr: float = 0.1,
     seed: int = 0,
+    representation: Representation = "separate",
 ) -> Dict[str, float]:
     torch.manual_seed(seed)
-    x, y = collect_hidden(model, device=device, repeats=512)
+    x, y = collect_hidden(model, device=device, repeats=512, representation=representation)
     n = x.size(0)
     perm = torch.randperm(n, device=x.device)
     train_idx = perm[: int(0.7 * n)]

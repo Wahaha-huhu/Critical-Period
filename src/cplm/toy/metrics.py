@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-from typing import Dict, List
+from typing import Dict
 import math
-import numpy as np
 import torch
 from torch import nn
 
-from .data import BASE_LABEL_IDS, CLASS_LABEL_IDS, ToyBatch, full_factorial_eval_batch
+from .data import BASE_LABEL_IDS, CLASS_LABEL_IDS, full_factorial_eval_batch, Representation
 
 
 @torch.no_grad()
-def evaluate_task(model: nn.Module, task: str, device: str | torch.device = "cpu") -> Dict[str, float]:
+def evaluate_task(
+    model: nn.Module,
+    task: str,
+    device: str | torch.device = "cpu",
+    *,
+    representation: Representation = "separate",
+) -> Dict[str, float]:
     model.eval()
-    batch = full_factorial_eval_batch(task, device=device, repeats=256)
+    batch = full_factorial_eval_batch(task, device=device, repeats=256, representation=representation)
     logits = model(batch.input_ids)
-    pred_pos = batch.label_pos - 1  # logits after Q token predict label token.
+    pred_pos = batch.label_pos - 1  # logits after query token predict label token.
     if task == "base":
         label_ids = BASE_LABEL_IDS.to(device)
         correct_class = batch.type_ids

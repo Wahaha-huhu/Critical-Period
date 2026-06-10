@@ -76,6 +76,7 @@ def build_model(cfg: Dict[str, Any]) -> TinyCausalTransformer:
 
 
 def train_base(cfg: Dict[str, Any], out_dir: Path, device: str) -> TinyCausalTransformer:
+    representation = cfg.get("toy", {}).get("representation", "separate")
     set_seed(int(cfg.get("seed", 0)))
     out_dir.mkdir(parents=True, exist_ok=True)
     model = build_model(cfg).to(device)
@@ -97,10 +98,10 @@ def train_base(cfg: Dict[str, Any], out_dir: Path, device: str) -> TinyCausalTra
 
     def evaluate_and_log(step: int):
         row = {"step": step}
-        row.update({f"base_{k}": v for k, v in evaluate_task(model, "base", device).items()})
-        row.update({f"class_{k}": v for k, v in evaluate_task(model, "class_injection", device).items()})
+        row.update({f"base_{k}": v for k, v in evaluate_task(model, "base", device, representation=representation).items()})
+        row.update({f"class_{k}": v for k, v in evaluate_task(model, "class_injection", device, representation=representation).items()})
         row.update(model_spectral_summary(model))
-        row.update(linear_probe_class_decodability(model, device=device, steps=int(cfg.get("probe", {}).get("steps", 100)), lr=float(cfg.get("probe", {}).get("lr", 0.1)), seed=int(cfg.get("seed", 0)) + step))
+        row.update(linear_probe_class_decodability(model, device=device, steps=int(cfg.get("probe", {}).get("steps", 100)), lr=float(cfg.get("probe", {}).get("lr", 0.1)), seed=int(cfg.get("seed", 0)) + step, representation=representation))
         append_jsonl(eval_log, row)
 
     if 0 in ckpt_steps:
@@ -110,7 +111,7 @@ def train_base(cfg: Dict[str, Any], out_dir: Path, device: str) -> TinyCausalTra
     for step in range(1, total_steps + 1):
         lr = learning_rate_for_step(step, train_cfg)
         set_optimizer_lr(opt, lr)
-        batch = sample_toy_batch(batch_size, task="base", device=device)
+        batch = sample_toy_batch(batch_size, task="base", device=device, representation=representation)
         loss = model.loss(batch.input_ids, batch.labels)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -140,19 +141,20 @@ def run_injection_cell(
     *,
     checkpoint_step: int,
 ) -> Dict[str, Any]:
+    representation = cfg.get("toy", {}).get("representation", "separate")
     out_dir.mkdir(parents=True, exist_ok=True)
     inj_cfg = cfg.get("injection", {})
     model = load_model_from_ckpt(base_ckpt, cfg, device)
     before_params = {name: p.detach().cpu().clone() for name, p in model.named_parameters()}
-    pre = evaluate_task(model, "class_injection", device)
-    pre_base = evaluate_task(model, "base", device)
+    pre = evaluate_task(model, "class_injection", device, representation=representation)
+    pre_base = evaluate_task(model, "base", device, representation=representation)
     opt = torch.optim.AdamW(model.parameters(), lr=float(inj_cfg.get("lr", 3e-4)), weight_decay=float(inj_cfg.get("weight_decay", 0.0)))
     metrics_path = out_dir / "metrics_injection.jsonl"
     metrics_path.write_text("")
     batch_size = int(inj_cfg.get("batch_size", 256))
     for step in range(1, int(inj_cfg.get("steps", 300)) + 1):
         model.train()
-        batch = sample_toy_batch(batch_size, task="class_injection", device=device)
+        batch = sample_toy_batch(batch_size, task="class_injection", device=device, representation=representation)
         loss = model.loss(batch.input_ids, batch.labels)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -160,8 +162,8 @@ def run_injection_cell(
         opt.step()
         if step % int(inj_cfg.get("log_every", 50)) == 0 or step == 1:
             append_jsonl(metrics_path, {"step": step, "loss": float(loss.item())})
-    post = evaluate_task(model, "class_injection", device)
-    post_base = evaluate_task(model, "base", device)
+    post = evaluate_task(model, "class_injection", device, representation=representation)
+    post_base = evaluate_task(model, "base", device, representation=representation)
     wash = None
     if int(cfg.get("washout", {}).get("steps", 0)) > 0:
         wcfg = cfg.get("washout", {})
@@ -170,7 +172,7 @@ def run_injection_cell(
         wpath.write_text("")
         for step in range(1, int(wcfg.get("steps", 100)) + 1):
             model.train()
-            batch = sample_toy_batch(batch_size, task="base", device=device)
+            batch = sample_toy_batch(batch_size, task="base", device=device, representation=representation)
             loss = model.loss(batch.input_ids, batch.labels)
             opt_w.zero_grad(set_to_none=True)
             loss.backward()
@@ -178,7 +180,7 @@ def run_injection_cell(
             opt_w.step()
             if step % int(wcfg.get("log_every", 50)) == 0 or step == 1:
                 append_jsonl(wpath, {"step": step, "loss": float(loss.item())})
-        wash = evaluate_task(model, "class_injection", device)
+        wash = evaluate_task(model, "class_injection", device, representation=representation)
     norms = update_norms(before_params, model)
     row = {
         "checkpoint_step": checkpoint_step,
