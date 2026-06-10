@@ -1,172 +1,35 @@
-# Critical-period LM experiments
+# Critical-period LM experiments — v5f placement-HOP quality patch
 
-Implementation scaffold for the Stage 0 synthetic agreement pilot.
+This repository contains the current experiment code for the critical-period/plasticity project.
 
-The repository is config-driven and keeps results cleanly separated from code. Stage 0 currently runs only two seeds by default.
+The newest path is **Placement-HOP v5f**:
 
-## Result layout
+- neutral marker `<HOP>`;
+- structural readout is placement only;
+- SimpleWiki-only corpus validation config for cleaner natural carriers;
+- CPU-friendly spaCy candidate cache and `max_candidates` stopping;
+- positional/adversarial placement shortcut gates;
+- verb/lemma audit export.
 
-```text
-results/
-  raw/<stage>/<group_id>/<run_id>/
-    config_resolved.yaml
-    manifest.json
-    metrics_train.jsonl
-    metrics_eval.jsonl
-    counts.jsonl
-    checkpoints/
-  summaries/<stage>/<group_id>/
-    runs.csv
-    latest_metrics.csv
-    dynamics_train.csv
-    dynamics_eval.csv
-    dynamics_counts.csv
-    gate_report.md
-    plots/
-      train_loss_ema.png
-      learning_rate.png
-      val_invariance.png
-      val_acc_local.png
-      val_acc_pp_same.png
-      val_acc_pp_opp.png
-      pp_opp_count.png
-  logs/<stage>/
-  manifests/<stage>/
-  indices/runs.csv
-```
-
-Each run directory is self-contained. It stores the resolved config, manifest, streaming metrics, counts, and optional checkpoints. Summaries and plots are derived artifacts and can be regenerated from `results/raw`.
-
-## Install
+Run the recommended validation:
 
 ```bash
-pip install -e .
+PYTHONPATH=src python scripts/build_placement_hop_v5.py \
+  --config configs/placement_hop_v5f_babylm_simplewiki.yaml
 ```
 
-If PyTorch with CUDA is not already installed, install the correct CUDA build first, then install the repo.
-
-## Quick smoke test
+Zip the result:
 
 ```bash
-python scripts/smoke_test.py --config configs/smoke.yaml
+zip -r placement_hop_v5f_simplewiki_validation.zip \
+  results/dataset_validation/placement_hop_v5f_babylm_simplewiki
 ```
 
-This runs a tiny CPU-friendly training loop, verifies generation, packing, evaluation, metric logging, and summary generation.
-
-## Stage 0 pilot
+Fallback if there are too few candidates:
 
 ```bash
-python scripts/run_stage0_grid.py --config configs/stage0.yaml
-python scripts/summarize_stage0.py --results results/raw/stage0/<group_id>
+PYTHONPATH=src python scripts/build_placement_hop_v5.py \
+  --config configs/placement_hop_v5f_babylm_simplewiki_small.yaml
 ```
 
-During a long run, export partial training dynamics with:
-
-```bash
-python scripts/summarize_stage0.py --results results/raw/stage0/<group_id> --allow-partial
-```
-
-The summary command writes CSV files and plots for training loss, validation probes, learning rate, and actual PP-opp dose.
-
-## Core implementation choices
-
-- Deterministic counter-based synthetic generator keyed by run seed, step, and sentence index.
-- Packed word-level sequences with full next-token loss and padding ignored.
-- Three probes: Local, PP-same, PP-opp.
-- Headline structural score: attractor invariance, requiring correctness on same-number and opposite-number attractor versions of the same frame.
-- Actual generated counts are logged: Local, PP-same, PP-opp, tokens, and LR-weighted PP-opp count.
-- Training dynamics are logged every `log_interval` steps and validation probes every `eval_interval` steps.
-- S1 holds the terminal learning rate after the calibrated budget `T` during fixed-dose continuation.
-- S2 fixed-dose is the clean dose-and-rate-matched readout; S1 fixed-dose is the realistic low-rate readout.
-- Stage 0 intentionally excludes Pythia, BabyLM, full onset grid, SVD tracking, and burst washout.
-
-## Injection dataset milestone
-
-The first implementation milestone builds the probe package for the revised critical-period programme:
-
-- `WORDHOP` structural arm, four words after the lemmatised verb with punctuation skipped.
-- `NOHOP` near-native within-rule control, marker immediately after the lemmatised verb.
-- `TOKENHOP` optional pilot difficulty step.
-- Fictional-fact control with memorisation, semantic rephrasing, and simple compositional probes.
-
-Build and validate the dataset package:
-
-```bash
-python scripts/build_injection_datasets.py --config configs/injection_datasets.yaml
-```
-
-Outputs are written to `results/dataset_validation/injection_milestone/` by default:
-
-```text
-config_resolved.yaml
-dataset_report.md
-example_sheet.md
-scoring_sanity_checks.csv
-datasets/
-  wordhop_train.jsonl
-  wordhop_probe.jsonl
-  nohop_train.jsonl
-  nohop_probe.jsonl
-  tokenhop_train.jsonl
-  tokenhop_probe.jsonl
-  facts_train.jsonl
-  facts_probe.jsonl
-```
-
-Revalidate an existing generated package:
-
-```bash
-python scripts/validate_injection_datasets.py \
-  --dataset-dir results/dataset_validation/injection_milestone/datasets
-```
-
-Do not start BabyLM training until the dataset report passes and the example sheet has been manually inspected.
-
-### v4 fine structural dose sweep
-
-After the coarse v4 dose sweep, run the fine transition sweep:
-
-```bash
-python scripts/run_structural_dose_sweep.py --config configs/fast_structural_fine_sweep_v4.yaml
-```
-
-See `docs/structural_fine_sweep_v4.md`.
-
-## BabyLM debug milestone v4
-
-After the v4 dataset and dose calibration pass, run the debug backbone milestone:
-
-```bash
-python scripts/build_injection_datasets.py --config configs/injection_datasets.yaml
-python scripts/run_babylm_debug_milestone.py --config configs/babylm_debug_smoke_v4.yaml
-python scripts/run_babylm_debug_milestone.py --config configs/babylm_debug_backbone_v4.yaml
-```
-
-The debug script can read a local corpus via `corpus.globs` in the config. If no corpus files match, it falls back to the validated v4 unmarked source-text stream; this is only a smoke-test fallback, not BabyLM evidence.
-
-## v4.1 corpus-derived HOP path
-
-For BabyLM/Pythia-tier structural injection, use the corpus-derived builder rather than the synthetic v4 generator:
-
-```bash
-PYTHONPATH=src python scripts/build_corpus_hop_datasets.py \
-  --config configs/corpus_hop_babylm_v41.yaml
-```
-
-Set `corpus.globs` in the config to local BabyLM/Pythia-domain text. If no files are matched and `use_demo_if_no_corpus: true`, the builder uses a natural-looking demo fallback only for smoke testing.
-
-## Placement-HOP v5 quick start
-
-The revised roadmap uses a neutral-marker placement-only HOP probe for BabyLM/Pythia-tier language data. Build it with:
-
-```bash
-PYTHONPATH=src python scripts/build_placement_hop_v5.py --config configs/placement_hop_v5_babylm.yaml
-```
-
-For a no-corpus smoke test:
-
-```bash
-PYTHONPATH=src python scripts/build_placement_hop_v5.py --config configs/placement_hop_v5_demo.yaml
-```
-
-The v5 builder caches spaCy-extracted candidates under `cache/placement_hop_v5/`, so later reruns skip CPU parsing.
+See `docs/placement_hop_v5f_simplewiki.md` for details.
